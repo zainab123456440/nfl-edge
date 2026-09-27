@@ -1,6 +1,9 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+# Import our games router
+from routes.games import router as games_router
+
 app = FastAPI(title="NFL Edge AI API")
 
 app.add_middleware(
@@ -10,6 +13,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Connect the games route to the main app
+app.include_router(games_router)
 
 @app.get("/health")
 def health_check():
