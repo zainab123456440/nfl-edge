@@ -1,0 +1,25 @@
+# Environments & Secrets
+.env
+.env.*
+!.env.example
+venv/
+.venv/
+env/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+build/
+.npm/
+
+# OS Files
+.DS_Store
+Thumbs.db
