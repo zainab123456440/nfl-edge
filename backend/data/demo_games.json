@@ -1,0 +1,15 @@
+[
+  {
+    "id": "game_1",
+    "start_time": "2026-09-27T13:00:00Z",
+    "status": "scheduled",
+    "home_team": { "id": "kc", "name": "Chiefs", "abbreviation": "KC" },
+    "away_team": { "id": "buf", "name": "Bills", "abbreviation": "BUF" },
+    "spread": { "opening": -1.5, "current": -2.5, "movement": -1.0 },
+    "total": { "opening": 47.0, "current": 48.5, "movement": 1.5 },
+    "moneyline_home": { "opening": -125, "current": -140, "movement": -15 },
+    "moneyline_away": { "opening": 105, "current": 120, "movement": 15 },
+    "has_significant_movement": true,
+    "data_source": "demo"
+  }
+]
