@@ -13,7 +13,10 @@ app = FastAPI(title="NFL Odds API")
 # Lets the Next.js frontend call this API from the browser
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[FRONTEND_ORIGIN],
+    allow_origins=[
+        "https://nfl-edge-ma94bkgh9-mapfunnels-crm.vercel.app",
+        "http://localhost:3000",
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
