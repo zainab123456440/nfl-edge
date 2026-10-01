@@ -1,27 +1,88 @@
-from fastapi import APIRouter
-from typing import List
-from schemas.game import GamesListResponse
-from schemas.common import DataSourcesMeta, DataSourceStatus
-from services.sport_services import get_nfl_games
-from datetime import datetime, timezone
 
-router = APIRouter(prefix="/api/games", tags=["Games"])
 
-@router.get("", response_model=GamesListResponse)
-async def get_games():
-    raw_games = await get_nfl_games()
-    
-    # Determine the status based on the data source
-    current_status = DataSourceStatus.DEMO
-    if raw_games and raw_games[0].get("data_source") == "live":
-        current_status = DataSourceStatus.LIVE
+from typing import Literal
 
-    meta = DataSourcesMeta(
-        nfl_games=current_status,
-        odds=current_status,
-        injuries=DataSourceStatus.UNAVAILABLE,
-        ai_analysis=DataSourceStatus.LIVE,
-        last_updated=datetime.now(timezone.utc)
+from fastapi import APIRouter, HTTPException
+
+from config import BOOKS, NFL_SEASON
+
+from services import queries
+
+router = APIRouter(prefix="/games", tags=["games"])
+
+
+def _check_book(book: str | None) -> None:
+    if book and book not in BOOKS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"book must be one of {BOOKS}",
+        )
+
+
+@router.get("")
+def list_games(
+    season: int = NFL_SEASON,
+    week: int | None = None,  # omit -> current week
+    team: str | None = None,  # name or abbreviation, e.g. "chiefs" or "KC"
+    book: str | None = None,  # limit odds to one sportsbook
+):
+    """Games for a week, each with current odds per book and line movement."""
+    _check_book(book)
+
+    return queries.list_games(
+        season=season,
+        week=week,
+        team=team,
+        book=book,
     )
-    
-    return GamesListResponse(data=raw_games, meta=meta)
+
+
+@router.get("/{game_id}")
+def get_game(
+    game_id: int,
+):
+    """One game: odds by book, opening odds, movement, and injuries for both teams."""
+    game = queries.get_game_detail(game_id)
+
+    if game is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Game not found",
+        )
+
+    return game
+
+
+@router.get("/{game_id}/line-history")
+def get_line_history(
+    game_id: int,
+    market: Literal["spreads", "totals", "h2h"] = "spreads",
+    outcome: Literal["home", "away", "over", "under"] | None = None,
+    book: str | None = None,  # omit -> one series per book
+):
+    """Time series for the line movement chart."""
+    _check_book(book)
+
+    if outcome and outcome not in queries.VALID_OUTCOMES[market]:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"outcome for '{market}' must be one of "
+                f"{sorted(queries.VALID_OUTCOMES[market])}"
+            ),
+        )
+
+    history = queries.get_line_history(
+        game_id,
+        market=market,
+        outcome=outcome,
+        book=book,
+    )
+
+    if history is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Game not found",
+        )
+
+    return history

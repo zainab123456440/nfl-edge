@@ -1,14 +1,15 @@
 /**
- * Hooks/useAuth.ts
+ * Hooks/useAuth.tsx
  *
- * React context + hook for authentication state.
+ * Central authentication context for the application.
  *
- * Wrap your app (or layout) in ``<AuthProvider>`` and then call
- * ``useAuth()`` anywhere in the tree to get the current user,
- * loading state, and login/signup/logout actions.
+ * Provides:
+ * - Current authenticated user
+ * - Loading state while restoring a session
+ * - Login / signup / logout actions
+ * - A single source of truth for protected frontend routes
  *
- * Token persistence is handled by the AuthAPI service layer — this
- * hook never touches localStorage directly.
+ * Token persistence is handled by the AuthAPI service layer.
  */
 
 "use client";
@@ -21,8 +22,12 @@ import {
   useMemo,
   useState,
 } from "react";
-import type { AuthUser, LoginCredentials, SignupCredentials } from "@/types/auth";
-import * as authApi from "@/services/AuthAPI";
+import type {
+  AuthUser,
+  LoginCredentials,
+  SignupCredentials,
+} from "../types/auth";
+import * as authApi from "../services/AuthAPI";
 
 // ---------------------------------------------------------------------------
 // Context shape
@@ -43,74 +48,143 @@ const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 // Provider
 // ---------------------------------------------------------------------------
 
-export function AuthProvider({ children }: { children: React.ReactNode }) {
+export function AuthProvider({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  // On mount: try to restore session from stored tokens.
+  // -------------------------------------------------------------------------
+  // Restore existing authentication session
+  // -------------------------------------------------------------------------
+
   useEffect(() => {
     let cancelled = false;
 
     async function restoreSession() {
-      const token = authApi.getStoredAccessToken();
-      if (!token) {
-        setIsLoading(false);
-        return;
-      }
-
       try {
-        const me = await authApi.getMe();
-        if (!cancelled) setUser(me);
-      } catch {
-        // Token might be expired — try refresh.
-        const refreshToken = authApi.getStoredRefreshToken();
-        if (refreshToken) {
-          try {
-            const refreshed = await authApi.refreshSession(refreshToken);
-            authApi.storeTokens(refreshed.access_token, refreshed.refresh_token);
-            const me = await authApi.getMe();
-            if (!cancelled) setUser(me);
-          } catch {
-            authApi.clearTokens();
+        const accessToken = authApi.getStoredAccessToken();
+
+        // No stored access token means the user is logged out.
+        if (!accessToken) {
+          return;
+        }
+
+        try {
+          // First try the existing access token.
+          const me = await authApi.getMe();
+
+          if (!cancelled) {
+            setUser(me);
           }
-        } else {
+
+          return;
+        } catch {
+          // Access token may have expired.
+        }
+
+        // Try refreshing the session.
+        const refreshToken = authApi.getStoredRefreshToken();
+
+        if (!refreshToken) {
           authApi.clearTokens();
+          return;
+        }
+
+        try {
+          const refreshed = await authApi.refreshSession(refreshToken);
+
+          if (cancelled) {
+            return;
+          }
+
+          authApi.storeTokens(
+            refreshed.access_token,
+            refreshed.refresh_token
+          );
+
+          const me = await authApi.getMe();
+
+          if (!cancelled) {
+            setUser(me);
+          }
+        } catch {
+          // Refresh failed — treat the session as expired.
+          authApi.clearTokens();
+
+          if (!cancelled) {
+            setUser(null);
+          }
         }
       } finally {
-        if (!cancelled) setIsLoading(false);
+        if (!cancelled) {
+          setIsLoading(false);
+        }
       }
     }
 
     restoreSession();
+
     return () => {
       cancelled = true;
     };
   }, []);
 
+  // -------------------------------------------------------------------------
+  // Login
+  // -------------------------------------------------------------------------
+
   const login = useCallback(async (creds: LoginCredentials) => {
     const response = await authApi.login(creds);
-    authApi.storeTokens(response.access_token, response.refresh_token);
-    // Fetch full user info after login.
+
+    authApi.storeTokens(
+      response.access_token,
+      response.refresh_token
+    );
+
     const me = await authApi.getMe();
+
     setUser(me);
   }, []);
 
+  // -------------------------------------------------------------------------
+  // Signup
+  // -------------------------------------------------------------------------
+
   const signup = useCallback(async (creds: SignupCredentials) => {
     const response = await authApi.signup(creds);
-    authApi.storeTokens(response.access_token, response.refresh_token);
+
+    authApi.storeTokens(
+      response.access_token,
+      response.refresh_token
+    );
+
     const me = await authApi.getMe();
+
     setUser(me);
   }, []);
+
+  // -------------------------------------------------------------------------
+  // Logout
+  // -------------------------------------------------------------------------
 
   const logout = useCallback(async () => {
     try {
       await authApi.logout();
     } catch {
-      // Best-effort — clear local state regardless.
+      // Logout is best-effort.
+      // Local authentication state must still be cleared.
+    } finally {
+      authApi.clearTokens();
+      setUser(null);
     }
-    authApi.clearTokens();
-    setUser(null);
   }, []);
+
+  // -------------------------------------------------------------------------
+  // Context value
+  // -------------------------------------------------------------------------
 
   const value = useMemo<AuthContextValue>(
     () => ({
@@ -124,7 +198,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [user, isLoading, login, signup, logout]
   );
 
-  return <AuthContext value={value}>{children}</AuthContext>;
+  return (
+    <AuthContext.Provider value={value}>
+      {children}
+    </AuthContext.Provider>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -132,9 +210,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 // ---------------------------------------------------------------------------
 
 export function useAuth(): AuthContextValue {
-  const ctx = useContext(AuthContext);
-  if (ctx === undefined) {
+  const context = useContext(AuthContext);
+
+  if (context === undefined) {
     throw new Error("useAuth must be used inside an <AuthProvider>.");
   }
-  return ctx;
+
+  return context;
 }

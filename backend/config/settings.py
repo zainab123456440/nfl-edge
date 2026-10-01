@@ -1,15 +1,4 @@
-"""
-settings.py
 
-Centralized environment configuration.
-
-Every other backend module reads configuration through this file rather
-than calling os.environ directly. This keeps secrets out of the code
-and gives one place to see every setting the app depends on.
-
-Environment variables can be configured locally through `.env` and
-in production through Vercel Environment Variables.
-"""
 
 import os
 from dotenv import load_dotenv
@@ -73,7 +62,7 @@ class Settings:
         )
 
         # ---------------------------------------------------------
-        # Frontend URL (For Supabase Auth Redirects)
+        # Frontend URL
         # ---------------------------------------------------------
         self.frontend_url: str = os.getenv(
             "FRONTEND_URL",
@@ -82,15 +71,6 @@ class Settings:
 
         # ---------------------------------------------------------
         # CORS
-        #
-        # Allows the deployed Next.js frontend on Vercel to
-        # communicate with the FastAPI backend.
-        #
-        # CORS_ORIGINS can still be overridden through an
-        # environment variable.
-        #
-        # Example:
-        # CORS_ORIGINS=http://localhost:3000,https://green-flora-lbwh.vercel.app
         # ---------------------------------------------------------
         self.cors_origins: list[str] = _get_list(
             "CORS_ORIGINS",
@@ -102,6 +82,13 @@ class Settings:
 
         # ---------------------------------------------------------
         # Supabase
+        #
+        # Keep SUPABASE_URL unchanged.
+        #
+        # The project already uses SUPABASE_SERVICE_ROLE_KEY in
+        # db.py, exports, Games, Props, and other data services.
+        # Therefore the centralized settings object uses the same
+        # environment variable.
         # ---------------------------------------------------------
         self.supabase_url: str = os.getenv(
             "SUPABASE_URL",
@@ -109,7 +96,7 @@ class Settings:
         )
 
         self.supabase_service_key: str = os.getenv(
-            "SUPABASE_SERVICE_KEY",
+            "SUPABASE_SERVICE_ROLE_KEY",
             "",
         )
 
@@ -206,7 +193,7 @@ class Settings:
         # ---------------------------------------------------------
         # General application information
         # ---------------------------------------------------------
-        self.app_name: str = "Green Flora API"
+        self.app_name: str = "NFL Edge API"
 
         self.environment: str = os.getenv(
             "ENVIRONMENT",

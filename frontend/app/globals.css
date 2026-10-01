@@ -1,0 +1,198 @@
+/* app/globals.css */
+
+@import "tailwindcss";
+
+/* ========== Premium Sports Color System ========== */
+:root {
+  /* Backgrounds - deep navy, not pure black */
+  --bg: #0f172a;           /* slate-900 */
+  --card: #1e293b;         /* slate-800 */
+  --card-hover: #273549;
+  --border: #334155;       /* slate-700 */
+
+  /* Text */
+  --text: #f1f5f9;         /* slate-100 */
+  --muted: #94a3b8;        /* slate-400 */
+
+  /* Accents */
+  --blue: #38bdf8;         /* sky-400 - primary accent */
+  --blue-dim: #0ea5e9;
+  --green: #22c55e;        /* best price / up */
+  --red: #ef4444;          /* live / down */
+  --amber: #f59e0b;        /* injuries / news */
+
+  /* Surfaces */
+  --surface: #1e293b;
+  --surface-2: #0f172a;
+}
+
+/* ========== Base ========== */
+* {
+  box-sizing: border-box;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Tabular numbers for odds columns */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* ========== Live Dot Pulse ========== */
+@keyframes live-pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.6);
+  }
+  50% {
+    opacity: 0.85;
+    transform: scale(1.15);
+    box-shadow: 0 0 0 6px rgba(239, 68, 68, 0);
+  }
+}
+
+.live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  background: var(--red);
+  animation: live-pulse 1.6s ease-in-out infinite;
+}
+
+/* ========== Skeleton Shimmer ========== */
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    #1e293b 25%,
+    #334155 50%,
+    #1e293b 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s ease-in-out infinite;
+  border-radius: 6px;
+}
+
+/* ========== Odds Flash (green / red) ========== */
+@keyframes flash-green {
+  0% { background-color: rgba(34, 197, 94, 0.35); }
+  100% { background-color: transparent; }
+}
+
+@keyframes flash-red {
+  0% { background-color: rgba(239, 68, 68, 0.35); }
+  100% { background-color: transparent; }
+}
+
+.flash-up {
+  animation: flash-green 0.7s ease-out;
+}
+
+.flash-down {
+  animation: flash-red 0.7s ease-out;
+}
+
+/* ========== Sports Accent - Moving Football ========== */
+@keyframes ball-bounce {
+  0%, 100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  25% {
+    transform: translateY(-6px) rotate(8deg);
+  }
+  50% {
+    transform: translateY(0) rotate(0deg);
+  }
+  75% {
+    transform: translateY(-3px) rotate(-6deg);
+  }
+}
+
+.football-bounce {
+  display: inline-block;
+  animation: ball-bounce 2.2s ease-in-out infinite;
+  font-size: 1.1em;
+}
+
+/* Subtle field lines background (optional decorative) */
+.field-lines {
+  background-image: repeating-linear-gradient(
+    90deg,
+    transparent,
+    transparent 48px,
+    rgba(56, 189, 248, 0.03) 48px,
+    rgba(56, 189, 248, 0.03) 50px
+  );
+}
+
+/* ========== Utility Classes ========== */
+.text-muted {
+  color: var(--muted);
+}
+
+.text-green {
+  color: var(--green);
+}
+
+.text-red {
+  color: var(--red);
+}
+
+.text-amber {
+  color: var(--amber);
+}
+
+.text-blue {
+  color: var(--blue);
+}
+
+.bg-card {
+  background-color: var(--card);
+}
+
+.border-card {
+  border-color: var(--border);
+}
+
+/* Smooth scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg);
+}
+::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+
+/* Focus ring for accessibility */
+:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
