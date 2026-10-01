@@ -11,70 +11,117 @@ import type {
   Injury,
 } from "./type";
 
+import {
+  getValidAccessToken,
+  refreshAccessToken,
+} from "../services/AuthAPI";
+
 const BASE_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-const ACCESS_TOKEN_KEY = "gf_access_token";
-
-function getAccessToken(): string | null {
-  if (typeof window === "undefined") return null;
-
-  try {
-    return localStorage.getItem(ACCESS_TOKEN_KEY);
-  } catch {
-    return null;
-  }
-}
-
-function clearStoredAuth(): void {
-  if (typeof window === "undefined") return;
-
-  try {
-    localStorage.removeItem("gf_access_token");
-    localStorage.removeItem("gf_refresh_token");
-  } catch {
-    // Ignore localStorage errors.
-  }
-}
+// ---------------------------------------------------------------------------
+// Authenticated fetcher
+// ---------------------------------------------------------------------------
 
 async function fetcher<T>(
   endpoint: string,
   init?: RequestInit
 ): Promise<T> {
-  const token = getAccessToken();
+  let hasRetriedAfterRefresh = false;
 
-  const headers = new Headers(init?.headers);
+  while (true) {
+    const token = await getValidAccessToken();
 
-  if (!headers.has("Content-Type")) {
-    headers.set("Content-Type", "application/json");
-  }
+    const headers = new Headers(init?.headers);
 
-  if (token && !headers.has("Authorization")) {
-    headers.set("Authorization", `Bearer ${token}`);
-  }
+    if (!headers.has("Content-Type")) {
+      headers.set(
+        "Content-Type",
+        "application/json"
+      );
+    }
 
-  const res = await fetch(`${BASE_URL}${endpoint}`, {
-    ...init,
-    headers,
-    cache: "no-store",
-  });
+    if (
+      token &&
+      !headers.has("Authorization")
+    ) {
+      headers.set(
+        "Authorization",
+        `Bearer ${token}`
+      );
+    }
 
-  if (res.status === 401) {
-    clearStoredAuth();
-  }
+    let res: Response;
 
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
+    try {
+      res = await fetch(
+        `${BASE_URL}${endpoint}`,
+        {
+          ...init,
+          headers,
+          cache: "no-store",
+        }
+      );
+    } catch (error) {
+      throw error;
+    }
+
+    // -----------------------------------------------------------------------
+    // Successful response
+    // -----------------------------------------------------------------------
+
+    if (res.ok) {
+      if (res.status === 204) {
+        return undefined as T;
+      }
+
+      return res.json() as Promise<T>;
+    }
+
+    // -----------------------------------------------------------------------
+    // Unauthorized
+    //
+    // The access token may have expired between token validation and the
+    // actual request. Refresh once and retry the request.
+    // -----------------------------------------------------------------------
+
+    if (
+      res.status === 401 &&
+      !hasRetriedAfterRefresh
+    ) {
+      hasRetriedAfterRefresh = true;
+
+      const freshToken =
+        await refreshAccessToken();
+
+      if (freshToken) {
+        continue;
+      }
+
+      /*
+       * Do not immediately delete authentication tokens here.
+       *
+       * AuthAPI owns token/session management. If the refresh token is
+       * genuinely invalid, the auth layer can handle the expired session.
+       */
+      throw new Error(
+        "Your session could not be refreshed."
+      );
+    }
+
+    // -----------------------------------------------------------------------
+    // Other backend errors
+    // -----------------------------------------------------------------------
+
+    const text =
+      await res.text().catch(() => "");
+
     throw new Error(
-      `API ${res.status}: ${text || res.statusText}`
+      `API ${res.status}: ${
+        text || res.statusText
+      }`
     );
   }
-
-  if (res.status === 204) {
-    return undefined as T;
-  }
-
-  return res.json() as Promise<T>;
 }
 
 /* ------------------------------------------------------------------ */
@@ -165,7 +212,9 @@ const TBD: Team = {
   abbreviation: "TBD",
 };
 
-const toTeam = (t: ApiTeam | null): Team =>
+const toTeam = (
+  t: ApiTeam | null
+): Team =>
   t
     ? {
         id: String(t.id),
@@ -179,11 +228,13 @@ function normalizeStatus(
 ): "scheduled" | "live" | "final" {
   const s = (raw ?? "").toLowerCase();
 
-  if (s.includes("final")) return "final";
+  if (s.includes("final")) {
+    return "final";
+  }
 
   if (
-    ["progress", "live", "half", "quarter"].some((k) =>
-      s.includes(k)
+    ["progress", "live", "half", "quarter"].some(
+      (k) => s.includes(k)
     )
   ) {
     return "live";
@@ -192,57 +243,112 @@ function normalizeStatus(
   return "scheduled";
 }
 
-function toGame(g: ApiGame): Game {
-  const status = normalizeStatus(g.status);
-
-  const odds: Odds[] = Object.entries(g.odds ?? {}).map(
-    ([book, o]) => ({
-      book,
-      spread: o.spread?.home?.line,
-      spreadPrice: o.spread?.home?.price,
-      total: o.total?.line,
-      totalOverPrice: o.total?.over,
-      totalUnderPrice: o.total?.under,
-      moneylineHome: o.moneyline?.home,
-      moneylineAway: o.moneyline?.away,
-      updatedAt: o.updated_at ?? "",
-    })
+function toGame(
+  g: ApiGame
+): Game {
+  const status = normalizeStatus(
+    g.status
   );
 
-  const ml = (k: "moneylineHome" | "moneylineAway") =>
-    odds.find((o) => o[k] !== undefined)?.[k];
+  const odds: Odds[] = Object.entries(
+    g.odds ?? {}
+  ).map(([book, o]) => ({
+    book,
+    spread:
+      o.spread?.home?.line,
+    spreadPrice:
+      o.spread?.home?.price,
+    total:
+      o.total?.line,
+    totalOverPrice:
+      o.total?.over,
+    totalUnderPrice:
+      o.total?.under,
+    moneylineHome:
+      o.moneyline?.home,
+    moneylineAway:
+      o.moneyline?.away,
+    updatedAt:
+      o.updated_at ?? "",
+  }));
 
-  const sp = g.movement?.spread_home;
-  const tt = g.movement?.total;
+  const ml = (
+    k:
+      | "moneylineHome"
+      | "moneylineAway"
+  ) =>
+    odds.find(
+      (o) => o[k] !== undefined
+    )?.[k];
+
+  const sp =
+    g.movement?.spread_home;
+
+  const tt =
+    g.movement?.total;
 
   return {
     id: String(g.id),
-    week: g.week ?? 0,
-    season: g.season,
+
+    week:
+      g.week ?? 0,
+
+    season:
+      g.season,
+
     status,
-    kickoff: g.kickoff_at,
-    venue: g.venue,
-    home: toTeam(g.home_team),
-    away: toTeam(g.away_team),
+
+    kickoff:
+      g.kickoff_at,
+
+    venue:
+      g.venue,
+
+    home:
+      toTeam(g.home_team),
+
+    away:
+      toTeam(g.away_team),
 
     score:
       status === "scheduled"
         ? undefined
         : {
-            home: g.home_score ?? 0,
-            away: g.away_score ?? 0,
+            home:
+              g.home_score ?? 0,
+            away:
+              g.away_score ?? 0,
           },
 
-    spread: sp?.current ?? undefined,
-    spreadOpen: sp?.open ?? undefined,
-    spreadMove: sp?.change ?? undefined,
+    spread:
+      sp?.current ??
+      undefined,
 
-    total: tt?.current ?? undefined,
-    totalOpen: tt?.open ?? undefined,
-    totalMove: tt?.change ?? undefined,
+    spreadOpen:
+      sp?.open ??
+      undefined,
 
-    moneylineHome: ml("moneylineHome"),
-    moneylineAway: ml("moneylineAway"),
+    spreadMove:
+      sp?.change ??
+      undefined,
+
+    total:
+      tt?.current ??
+      undefined,
+
+    totalOpen:
+      tt?.open ??
+      undefined,
+
+    totalMove:
+      tt?.change ??
+      undefined,
+
+    moneylineHome:
+      ml("moneylineHome"),
+
+    moneylineAway:
+      ml("moneylineAway"),
 
     odds,
   };
@@ -253,90 +359,151 @@ function toGame(g: ApiGame): Game {
 /* ------------------------------------------------------------------ */
 
 /** Games list with optional filters (week, book, team search). */
-export async function getGames(params?: {
-  week?: number;
-  book?: string;
-  team?: string;
-}): Promise<GamesResponse> {
-  const search = new URLSearchParams();
+export async function getGames(
+  params?: {
+    week?: number;
+    book?: string;
+    team?: string;
+  }
+): Promise<GamesResponse> {
+  const search =
+    new URLSearchParams();
 
-  if (params?.week !== undefined) {
-    search.set("week", String(params.week));
+  if (
+    params?.week !== undefined
+  ) {
+    search.set(
+      "week",
+      String(params.week)
+    );
   }
 
   if (params?.book) {
-    search.set("book", params.book);
+    search.set(
+      "book",
+      params.book
+    );
   }
 
   if (params?.team) {
-    search.set("team", params.team);
+    search.set(
+      "team",
+      params.team
+    );
   }
 
-  const qs = search.toString();
+  const qs =
+    search.toString();
 
-  const raw = await fetcher<ApiGamesResponse>(
-    `/games${qs ? `?${qs}` : ""}`
-  );
+  const raw =
+    await fetcher<ApiGamesResponse>(
+      `/games${
+        qs ? `?${qs}` : ""
+      }`
+    );
 
-  const games = (raw.games ?? []).map(toGame);
+  const games =
+    (raw.games ?? []).map(
+      toGame
+    );
 
-  const moves: BiggestMove[] = games
-    .flatMap((g) => {
-      const matchup = `${g.away.abbreviation} @ ${g.home.abbreviation}`;
-      const out: BiggestMove[] = [];
+  const moves: BiggestMove[] =
+    games
+      .flatMap((g) => {
+        const matchup =
+          `${g.away.abbreviation} @ ${g.home.abbreviation}`;
 
-      if (g.spreadMove) {
-        out.push({
-          gameId: g.id,
-          matchup,
-          market: "spread",
-          direction: g.spreadMove > 0 ? "up" : "down",
-          amount: Math.abs(g.spreadMove),
-        });
-      }
+        const out: BiggestMove[] =
+          [];
 
-      if (g.totalMove) {
-        out.push({
-          gameId: g.id,
-          matchup,
-          market: "total",
-          direction: g.totalMove > 0 ? "up" : "down",
-          amount: Math.abs(g.totalMove),
-        });
-      }
+        if (g.spreadMove) {
+          out.push({
+            gameId: g.id,
+            matchup,
+            market: "spread",
+            direction:
+              g.spreadMove > 0
+                ? "up"
+                : "down",
+            amount:
+              Math.abs(
+                g.spreadMove
+              ),
+          });
+        }
 
-      return out;
-    })
-    .sort((a, b) => b.amount - a.amount);
+        if (g.totalMove) {
+          out.push({
+            gameId: g.id,
+            matchup,
+            market: "total",
+            direction:
+              g.totalMove > 0
+                ? "up"
+                : "down",
+            amount:
+              Math.abs(
+                g.totalMove
+              ),
+          });
+        }
 
-  const totals = games
-    .map((g) => g.total)
-    .filter((t): t is number => t !== undefined);
+        return out;
+      })
+      .sort(
+        (a, b) =>
+          b.amount - a.amount
+      );
 
-  const liveNow = games.filter(
-    (g) => g.status === "live"
-  ).length;
+  const totals =
+    games
+      .map((g) => g.total)
+      .filter(
+        (t): t is number =>
+          t !== undefined
+      );
+
+  const liveNow =
+    games.filter(
+      (g) =>
+        g.status === "live"
+    ).length;
 
   return {
     games,
-    week: raw.week ?? 0,
-    liveCount: liveNow,
+
+    week:
+      raw.week ?? 0,
+
+    liveCount:
+      liveNow,
 
     stats: {
-      gamesThisWeek: games.length,
-      liveNow,
-      biggestMove: moves[0]?.amount ?? 0,
+      gamesThisWeek:
+        games.length,
 
-      averageTotal: totals.length
-        ? Math.round(
-            (totals.reduce((a, b) => a + b, 0) /
-              totals.length) *
-              10
-          ) / 10
-        : 0,
+      liveNow,
+
+      biggestMove:
+        moves[0]?.amount ?? 0,
+
+      averageTotal:
+        totals.length
+          ? Math.round(
+              (
+                totals.reduce(
+                  (a, b) =>
+                    a + b,
+                  0
+                ) /
+                totals.length
+              ) * 10
+            ) / 10
+          : 0,
     },
 
-    biggestMoves: moves.slice(0, 5),
+    biggestMoves:
+      moves.slice(0, 5),
   };
 }
 
@@ -344,9 +511,10 @@ export async function getGames(params?: {
 export async function getGame(
   gameId: string
 ): Promise<Game> {
-  const raw = await fetcher<ApiGame>(
-    `/games/${gameId}`
-  );
+  const raw =
+    await fetcher<ApiGame>(
+      `/games/${gameId}`
+    );
 
   return toGame(raw);
 }
@@ -354,68 +522,105 @@ export async function getGame(
 /** Line history + injuries for the slide-over chart. */
 export async function getLineHistory(
   gameId: string,
-  market: "spread" | "total" = "spread",
+  market:
+    | "spread"
+    | "total" = "spread",
   game?: Game
 ): Promise<LineHistoryResponse> {
   const apiMarket =
-    market === "spread" ? "spreads" : "totals";
+    market === "spread"
+      ? "spreads"
+      : "totals";
 
-  const [hist, detail] = await Promise.all([
+  const [
+    hist,
+    detail,
+  ] = await Promise.all([
     fetcher<ApiLineHistory>(
       `/games/${gameId}/line-history?market=${apiMarket}`
     ),
 
-    fetcher<{ injuries: ApiInjury[] }>(
+    fetcher<{
+      injuries: ApiInjury[];
+    }>(
       `/games/${gameId}`
     ),
   ]);
 
-  const series: LineSeries[] = Object.entries(
-    hist.series ?? {}
-  ).map(([book, pts]) => ({
-    book,
+  const series: LineSeries[] =
+    Object.entries(
+      hist.series ?? {}
+    ).map(
+      ([book, pts]) => ({
+        book,
 
-    points: pts
-      .filter((p) => p.line !== null)
-      .map((p) => ({
-        time: p.t,
-        value: p.line as number,
-      })),
-  }));
+        points:
+          pts
+            .filter(
+              (p) =>
+                p.line !== null
+            )
+            .map((p) => ({
+              time: p.t,
+              value:
+                p.line as number,
+            })),
+      })
+    );
 
-  const firstValue = series.find(
-    (s) => s.points.length
-  )?.points[0]?.value;
+  const firstValue =
+    series.find(
+      (s) =>
+        s.points.length
+    )?.points[0]?.value;
 
   const open =
-    (market === "spread"
-      ? game?.spreadOpen
-      : game?.totalOpen) ??
+    (
+      market === "spread"
+        ? game?.spreadOpen
+        : game?.totalOpen
+    ) ??
     firstValue ??
     0;
 
-  const abbr: Record<string, string> = {};
+  const abbr:
+    Record<string, string> =
+    {};
 
   if (game) {
-    abbr[game.home.id] = game.home.abbreviation;
-    abbr[game.away.id] = game.away.abbreviation;
+    abbr[game.home.id] =
+      game.home.abbreviation;
+
+    abbr[game.away.id] =
+      game.away.abbreviation;
   }
 
-  const injuries: Injury[] = (
-    detail.injuries ?? []
-  ).map((i) => ({
-    player: i.player_name,
-    team:
-      abbr[String(i.team_id)] ??
-      String(i.team_id),
-    status: i.status,
-    description:
-      i.description ?? undefined,
-    reportedAt:
-      i.reported_at ??
-      i.captured_at ??
-      "",
-  }));
+  const injuries: Injury[] =
+    (
+      detail.injuries ??
+      []
+    ).map((i) => ({
+      player:
+        i.player_name,
+
+      team:
+        abbr[
+          String(i.team_id)
+        ] ??
+        String(i.team_id),
+
+      status:
+        i.status,
+
+      description:
+        i.description ??
+        undefined,
+
+      reportedAt:
+        i.reported_at ??
+        i.captured_at ??
+        "",
+    }));
 
   return {
     gameId,
@@ -483,28 +688,46 @@ export async function getPropsBoard(
     player?: string;
   }
 ): Promise<PropsBoardResponse> {
-  const search = new URLSearchParams();
+  const search =
+    new URLSearchParams();
 
-  if (params?.week !== undefined) {
-    search.set("week", String(params.week));
+  if (
+    params?.week !== undefined
+  ) {
+    search.set(
+      "week",
+      String(params.week)
+    );
   }
 
   if (params?.market) {
-    search.set("market", params.market);
+    search.set(
+      "market",
+      params.market
+    );
   }
 
   if (params?.game) {
-    search.set("game", params.game);
+    search.set(
+      "game",
+      params.game
+    );
   }
 
   if (params?.player) {
-    search.set("player", params.player);
+    search.set(
+      "player",
+      params.player
+    );
   }
 
-  const qs = search.toString();
+  const qs =
+    search.toString();
 
   return fetcher<PropsBoardResponse>(
-    `/props/board${qs ? `?${qs}` : ""}`
+    `/props/board${
+      qs ? `?${qs}` : ""
+    }`
   );
 }
 
@@ -513,10 +736,18 @@ export async function getPropsBoard(
 /* ------------------------------------------------------------------ */
 
 const AI_MOCK =
-  process.env.NEXT_PUBLIC_AI_MOCK !== "false";
+  process.env.NEXT_PUBLIC_AI_MOCK !==
+  "false";
 
-const wait = (ms: number) =>
-  new Promise((resolve) => setTimeout(resolve, ms));
+const wait = (
+  ms: number
+) =>
+  new Promise((resolve) =>
+    setTimeout(
+      resolve,
+      ms
+    )
+  );
 
 export interface UploadedFileRef {
   id: string;
@@ -546,8 +777,8 @@ interface ApiChatResponse {
 /**
  * Upload a user file.
  *
- * The access token is attached manually because multipart/form-data
- * must allow the browser to generate its own Content-Type boundary.
+ * Uses getValidAccessToken() so an expired/near-expiry token
+ * is refreshed before the multipart request.
  */
 export async function uploadFile(
   file: File
@@ -556,74 +787,128 @@ export async function uploadFile(
     await wait(300);
 
     return {
-      id: crypto.randomUUID(),
-      name: file.name,
-      size: file.size,
+      id:
+        crypto.randomUUID(),
+
+      name:
+        file.name,
+
+      size:
+        file.size,
     };
   }
 
-  const token = getAccessToken();
+  let hasRetriedAfterRefresh =
+    false;
 
-  const body = new FormData();
-  body.append("file", file);
+  while (true) {
+    const token =
+      await getValidAccessToken();
 
-  const headers = new Headers();
+    const body =
+      new FormData();
 
-  if (token) {
-    headers.set(
-      "Authorization",
-      `Bearer ${token}`
+    body.append(
+      "file",
+      file
     );
-  }
 
-  const res = await fetch(
-    `${BASE_URL}/files/upload`,
-    {
-      method: "POST",
-      headers,
-      body,
-      cache: "no-store",
+    const headers =
+      new Headers();
+
+    if (token) {
+      headers.set(
+        "Authorization",
+        `Bearer ${token}`
+      );
     }
-  );
 
-  if (res.status === 401) {
-    clearStoredAuth();
-  }
+    let res: Response;
 
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
+    try {
+      res = await fetch(
+        `${BASE_URL}/files/upload`,
+        {
+          method: "POST",
+          headers,
+          body,
+          cache: "no-store",
+        }
+      );
+    } catch (error) {
+      throw error;
+    }
+
+    // Successful upload
+    if (res.ok) {
+      return res.json() as Promise<UploadedFileRef>;
+    }
+
+    // Refresh and retry once
+    if (
+      res.status === 401 &&
+      !hasRetriedAfterRefresh
+    ) {
+      hasRetriedAfterRefresh =
+        true;
+
+      const freshToken =
+        await refreshAccessToken();
+
+      if (freshToken) {
+        continue;
+      }
+
+      throw new Error(
+        "Your session could not be refreshed."
+      );
+    }
+
+    const text =
+      await res.text().catch(
+        () => ""
+      );
 
     throw new Error(
-      `API ${res.status}: ${text || res.statusText}`
+      `API ${res.status}: ${
+        text || res.statusText
+      }`
     );
   }
-
-  return res.json() as Promise<UploadedFileRef>;
 }
 
 /**
- * Send a chat message, optionally referencing an
- * uploaded file.
+ * Send a chat message, optionally referencing an uploaded file.
  */
 export async function sendChatMessage(
   message: string,
-  attachment?: UploadedFileRef | null
+  attachment?:
+    | UploadedFileRef
+    | null
 ): Promise<ChatReply> {
   if (AI_MOCK) {
     await wait(1400);
 
     if (
       attachment ||
-      /lineup|export|generate|csv/i.test(message)
+      /lineup|export|generate|csv/i.test(
+        message
+      )
     ) {
       return {
         text:
           "Analysis complete. I've prepared a file with the results.",
 
         file: {
-          name: "generated_lineups.csv",
-          kind: "CSV",
-          mime: "text/csv",
+          name:
+            "generated_lineups.csv",
+
+          kind:
+            "CSV",
+
+          mime:
+            "text/csv",
+
           content:
             "column_a,column_b\nplaceholder,placeholder\n",
         },
@@ -636,20 +921,29 @@ export async function sendChatMessage(
     };
   }
 
-  const raw = await fetcher<ApiChatResponse>(
-    "/chat",
-    {
-      method: "POST",
-      body: JSON.stringify({
-        message,
-        file_id: attachment?.id ?? null,
-      }),
-    }
-  );
+  const raw =
+    await fetcher<ApiChatResponse>(
+      "/chat",
+      {
+        method: "POST",
+
+        body:
+          JSON.stringify({
+            message,
+            file_id:
+              attachment?.id ??
+              null,
+          }),
+      }
+    );
 
   return {
-    text: raw.reply,
-    file: raw.file ?? undefined,
+    text:
+      raw.reply,
+
+    file:
+      raw.file ??
+      undefined,
   };
 }
 
@@ -659,29 +953,53 @@ export async function sendChatMessage(
 export function downloadGeneratedFile(
   file: GeneratedFile
 ) {
-  const href = file.url
-    ? file.url
-    : file.id && !AI_MOCK
-      ? `${BASE_URL}/files/${file.id}/download`
-      : URL.createObjectURL(
-          new Blob(
-            [file.content ?? ""],
-            { type: file.mime }
-          )
-        );
+  const href =
+    file.url
+      ? file.url
+      : file.id &&
+          !AI_MOCK
+        ? `${BASE_URL}/files/${file.id}/download`
+        : URL.createObjectURL(
+            new Blob(
+              [
+                file.content ??
+                  "",
+              ],
+              {
+                type:
+                  file.mime,
+              }
+            )
+          );
 
-  const a = document.createElement("a");
+  const a =
+    document.createElement(
+      "a"
+    );
 
-  a.href = href;
-  a.download = file.name;
-  a.rel = "noopener";
+  a.href =
+    href;
 
-  document.body.appendChild(a);
+  a.download =
+    file.name;
+
+  a.rel =
+    "noopener";
+
+  document.body.appendChild(
+    a
+  );
+
   a.click();
+
   a.remove();
 
-  if (href.startsWith("blob:")) {
-    URL.revokeObjectURL(href);
+  if (
+    href.startsWith("blob:")
+  ) {
+    URL.revokeObjectURL(
+      href
+    );
   }
 }
 
@@ -703,19 +1021,24 @@ export interface GlanceStats {
  * never completely breaks.
  */
 export async function getGlanceStats(): Promise<GlanceStats> {
-  const [gamesRes, propsRes] =
+  const [
+    gamesRes,
+    propsRes,
+  ] =
     await Promise.allSettled([
       getGames(),
       getPropsBoard(),
     ]);
 
   const games =
-    gamesRes.status === "fulfilled"
+    gamesRes.status ===
+    "fulfilled"
       ? gamesRes.value
       : null;
 
   const props =
-    propsRes.status === "fulfilled"
+    propsRes.status ===
+    "fulfilled"
       ? propsRes.value
       : null;
 
@@ -743,6 +1066,6 @@ export async function getGlanceStats(): Promise<GlanceStats> {
 /**
  * Simple typed fetcher you can pass directly to SWR.
  */
-export const swrFetcher = <T>(
-  url: string
-) => fetcher<T>(url);
+export const swrFetcher =
+  <T>(url: string) =>
+    fetcher<T>(url);

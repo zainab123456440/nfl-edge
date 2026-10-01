@@ -4,8 +4,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from config import FRONTEND_ORIGIN
 from routes import auth, cron, games, props, user_props
 from routes.lineups import router as lineups_router
+from routes.assistant import router as assistant_router
+
 
 app = FastAPI(title="NFL Odds API")
+
 
 # Lets the Next.js frontend call this API from the browser
 app.add_middleware(
@@ -15,12 +18,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# ---------------------------------------------------------
+# API Routes
+# ---------------------------------------------------------
+
 app.include_router(auth.router)
 app.include_router(cron.router)
 app.include_router(games.router)
 app.include_router(props.router)
 app.include_router(user_props.router)
 app.include_router(lineups_router)
+app.include_router(assistant_router)
+
 
 @app.get("/health")
 def health():

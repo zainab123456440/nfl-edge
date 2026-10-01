@@ -1,8 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { useState } from "react";
 import { cn } from "../../lib/utils";
+import { useAuth } from "../../Hooks/useAuth";
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: "▣" },
@@ -20,6 +22,26 @@ export default function Sidebar({
   onToggle,
 }: SidebarProps) {
   const pathname = usePathname();
+  const router = useRouter();
+  const { logout } = useAuth();
+  const [loggingOut, setLoggingOut] = useState(false);
+
+  async function handleLogout() {
+    if (loggingOut) return;
+
+    setLoggingOut(true);
+
+    try {
+      // useAuth().logout clears the tokens AND sets user to null in
+      // AuthProvider, so the login page will not redirect back to
+      // the dashboard.
+      await logout();
+    } catch {
+      // Logout is best-effort; local state is cleared regardless.
+    } finally {
+      router.replace("/login");
+    }
+  }
 
   return (
     <aside
@@ -88,6 +110,35 @@ export default function Sidebar({
             );
           })}
         </nav>
+
+        {/* Logout */}
+        <div className="mt-auto pt-4">
+          <button
+            type="button"
+            onClick={handleLogout}
+            disabled={loggingOut}
+            title={collapsed ? "Logout" : undefined}
+            className={cn(
+              "flex w-full items-center rounded-lg py-3 text-sm font-medium transition-colors",
+              "text-[var(--muted-foreground)] hover:bg-red-500/10 hover:text-red-500",
+              "disabled:cursor-not-allowed disabled:opacity-50",
+              collapsed
+                ? "justify-center px-2"
+                : "gap-3 px-3"
+            )}
+          >
+            <span className="flex w-5 shrink-0 items-center justify-center text-base">
+              {loggingOut ? "…" : "↪"}
+            </span>
+
+            {!collapsed && (
+              <span>
+                {loggingOut ? "Logging out..." : "Logout"}
+              </span>
+            )}
+          </button>
+        </div>
+
       </div>
     </aside>
   );

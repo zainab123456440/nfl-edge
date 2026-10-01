@@ -1,3 +1,4 @@
+
 // app/props/page.tsx
 "use client";
 
@@ -286,8 +287,8 @@ function PropsContent() {
   }
 
   return (
-    <div className="min-h-screen">
-      <main className="mx-auto w-full max-w-[1600px] space-y-6 px-4 py-6 sm:px-6 md:px-8">
+    <div className="min-h-screen w-full">
+      <main className="w-full space-y-6 px-4 py-6 sm:px-6 md:px-8">
         {/* HERO HEADER */}
         <section className="relative overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--card)] p-6 sm:p-8">
           {/* soft glow */}

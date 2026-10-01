@@ -388,7 +388,7 @@ class AuthService:
 
     def logout(self, access_token: str) -> None:
         """
-        Sign out the user associated with the supplied access token.
+        Revoke the session that belongs to the supplied access token.
 
         Logout is intentionally best-effort. The frontend should still
         clear its local tokens even if the remote logout call fails.
@@ -399,7 +399,14 @@ class AuthService:
             return
 
         try:
-            supabase.auth.sign_out(access_token)
+            # The admin sign-out takes the user's JWT string.
+            # "local" ends only this session; use "global" to sign the
+            # user out of every device.
+            #
+            # Do NOT call supabase.auth.sign_out(access_token) here:
+            # sign_out() expects an options dict, not a token string,
+            # which caused "string indices must be integers".
+            supabase.auth.admin.sign_out(access_token, "local")
         except Exception as exc:
             logger.warning(
                 "Supabase logout failed (non-critical): %s",

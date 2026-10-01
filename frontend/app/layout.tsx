@@ -34,20 +34,17 @@ export default function RootLayout({
 
   return (
     <html lang="en">
-      <body>
+      <body className="w-full min-h-screen overflow-x-hidden">
         <AuthProvider>
           {authRoute ? (
-            // Authentication pages intentionally have no
-            // application navigation.
-            <main className="min-h-screen">
+            <main className="min-h-screen w-full">
               {children}
             </main>
           ) : (
-            // Main application pages.
-            <>
+            <div className="flex min-h-screen w-full flex-col">
               <TopBar />
 
-              <div className="flex">
+              <div className="flex min-h-[calc(100vh-64px)] w-full">
                 <Sidebar
                   collapsed={collapsed}
                   onToggle={() =>
@@ -56,14 +53,16 @@ export default function RootLayout({
                 />
 
                 <main
-                  className={`min-w-0 flex-1 transition-all duration-200 ${
+                  className={`min-w-0 flex-1 w-full transition-all duration-200 ${
                     collapsed ? "pl-16" : "pl-60"
                   }`}
                 >
-                  {children}
+                  <div className="w-full min-w-0">
+                    {children}
+                  </div>
                 </main>
               </div>
-            </>
+            </div>
           )}
         </AuthProvider>
       </body>
