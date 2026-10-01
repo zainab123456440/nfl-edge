@@ -2,4 +2,5 @@ fastapi
 uvicorn
 pydantic
 python-dotenv
-supabasepython-multipart
+supabase
+python-multipart
