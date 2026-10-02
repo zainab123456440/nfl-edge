@@ -110,7 +110,7 @@ const SUGGESTIONS = [
 ];
 
 const API_BASE =
-process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+process.env.NEXT_PUBLIC_API_URL ?? "https://nfl-backend-eight.vercel.app";
 /* ───────────── Authentication helpers ───────────── */
 
 /**

@@ -17,7 +17,7 @@ import {
 } from "../services/AuthAPI";
 
 const BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+  process.env.NEXT_PUBLIC_API_URL ?? "https://nfl-backend-eight.vercel.app/";
 
 // ---------------------------------------------------------------------------
 // Authenticated fetcher
