@@ -14,7 +14,7 @@ app = FastAPI(title="NFL Odds API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://nfl-edge-ma94bkgh9-mapfunnels-crm.vercel.app",
+        "https://nfl-edge-alpha.vercel.app",
         "http://localhost:3000",
     ],
     allow_methods=["*"],
