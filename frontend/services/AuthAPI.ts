@@ -6,7 +6,7 @@ import type {
 } from "../types/auth";
 
 const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+  process.env.NEXT_PUBLIC_API_URL ?? "https://nfl-backend-eight.vercel.app";
 
 const REQUEST_TIMEOUT_MS = 15000;
 const LOGOUT_TIMEOUT_MS = 4000;
