@@ -1,3 +1,4 @@
+
 """
 schemas/assistant.py
 
@@ -12,9 +13,14 @@ from pydantic import BaseModel, Field
 # Chat
 # ---------------------------------------------------------------------------
 class ChatRequest(BaseModel):
-    message: str = Field(..., min_length=1, max_length=8000)
+    # Empty messages are allowed so users can upload a file
+    # without typing a message.
+    message: str = Field(default="", max_length=8000)
+
     conversation_id: str | None = None   # omit to start a new conversation
-    file_ids: list[str] = Field(default_factory=list)  # files attached to this message
+
+    # Files attached to this message.
+    file_ids: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
