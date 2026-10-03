@@ -1,350 +1,354 @@
-"""Generate a diverse pool of DraftKings Showdown lineups."""
+"""
+Generic DFS lineup engine data models.
+
+These models are provider-agnostic and support:
+- DraftKings
+- FanDuel
+- Other DFS providers
+- Showdown contests
+- Classic contests
+- Future contest formats
+
+General file handling (CSV/XLSX/TXT/JSON/PDF/etc.) should NOT live here.
+This file only defines the data structures used by the DFS engine.
+"""
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-
-from .contest_rules import SHOWDOWN, ContestRules
-from .models import DKPlayer
-from .optimizer import (
-    Lineup,
-    OptimizerError,
-    build_lineup,
-    validate_lineup,
-)
-from .projections import Projection
+from datetime import datetime
+from enum import Enum
+from typing import Any, Optional
 
+from pydantic import BaseModel, Field
 
-@dataclass(frozen=True)
-class PoolSettings:
-    lineup_count: int = 150
 
-    # Maximum percentage of lineups in which one player may appear.
-    max_player_exposure: float = 0.70
+# ============================================================
+# ENUMS
+# ============================================================
 
-    # Maximum percentage of lineups in which one player may be captain.
-    max_captain_exposure: float = 0.40
+class ContestType(str, Enum):
+    SHOWDOWN = "showdown"
+    CLASSIC = "classic"
+    CUSTOM = "custom"
 
-    # Number of different players we try to use across the pool.
-    min_unique_players: int = 8
-
-    # Safety limit if the constraints make a lineup difficult to find.
-    attempts_per_lineup: int = 100
 
-    # How strongly frequently-used players are penalized.
-    exposure_penalty: float = 8.0
+class DFSProvider(str, Enum):
+    DRAFTKINGS = "draftkings"
+    FANDUEL = "fanduel"
+    UNKNOWN = "unknown"
 
-    # How strongly frequently-used captains are penalized.
-    captain_penalty: float = 12.0
 
-    # Never allow the same exact lineup more than this many times.
-    max_duplicate_lineups: int = 1
+# ============================================================
+# RAW SALARY / PLAYER ROWS
+# ============================================================
 
+class SalaryRow(BaseModel):
+    """
+    Generic normalized row from a DFS salary/contest file.
 
-@dataclass
-class LineupPool:
-    lineups: list[Lineup] = field(default_factory=list)
-    player_exposure: dict[str, int] = field(default_factory=dict)
-    captain_exposure: dict[str, int] = field(default_factory=dict)
-    warnings: list[str] = field(default_factory=list)
-
-    @property
-    def count(self) -> int:
-        return len(self.lineups)
-
-    @property
-    def unique_player_count(self) -> int:
-        return len(self.player_exposure)
+    This is provider-agnostic. Different providers can have
+    different original column names; the parser should normalize
+    them into this structure.
+    """
 
+    position: str = ""
+    name_id: str = ""
+    name: str
 
-def _lineup_key(lineup: Lineup) -> tuple:
-    return (
-        lineup.captain.player_key,
-        tuple(
-            sorted(
-                p.player_key
-                for p in lineup.flex
-            )
-        ),
-    )
+    dfs_id: str = ""
 
+    roster_position: str = ""
 
-def _max_player_count(
-    settings: PoolSettings,
-) -> int:
-    return max(
-        1,
-        int(settings.lineup_count * settings.max_player_exposure),
-    )
+    salary: int = 0
 
+    game_info: str = ""
 
-def _max_captain_count(
-    settings: PoolSettings,
-) -> int:
-    return max(
-        1,
-        int(settings.lineup_count * settings.max_captain_exposure),
-    )
+    team: str = ""
 
+    opponent: Optional[str] = None
 
-def _player_penalties(
-    players: list[DKPlayer],
-    counts: dict[str, int],
-    settings: PoolSettings,
-) -> dict[str, float]:
-    penalties = {}
+    avg_points: float = 0.0
 
-    max_count = _max_player_count(settings)
+    provider: DFSProvider = DFSProvider.UNKNOWN
 
-    for player in players:
-        count = counts.get(player.player_key, 0)
+    extra: dict[str, Any] = Field(default_factory=dict)
 
-        if count >= max_count:
-            penalties[player.player_key] = 1_000_000.0
-        else:
-            penalties[player.player_key] = (
-                count * settings.exposure_penalty
-            )
 
-    return penalties
+class DKRow(BaseModel):
+    """
+    Backward-compatible DraftKings salary row.
 
+    Keep this because existing DraftKings parsing code may
+    still use it.
+    """
 
-def _captain_penalties(
-    players: list[DKPlayer],
-    counts: dict[str, int],
-    settings: PoolSettings,
-) -> dict[str, float]:
-    penalties = {}
+    position: str = ""
+    name_id: str = ""
+    name: str
 
-    max_count = _max_captain_count(settings)
+    dk_id: str = ""
 
-    for player in players:
-        count = counts.get(player.player_key, 0)
+    roster_position: str = ""
 
-        if count >= max_count:
-            penalties[player.player_key] = 1_000_000.0
-        else:
-            penalties[player.player_key] = (
-                count * settings.captain_penalty
-            )
-
-    return penalties
-
-
-def _candidate_is_allowed(
-    lineup: Lineup,
-    pool: LineupPool,
-    settings: PoolSettings,
-) -> bool:
-    max_player = _max_player_count(settings)
-    max_captain = _max_captain_count(settings)
-
-    if pool.captain_exposure.get(
-        lineup.captain.player_key,
-        0,
-    ) >= max_captain:
-        return False
-
-    for player in lineup.players:
-        if pool.player_exposure.get(
-            player.player_key,
-            0,
-        ) >= max_player:
-            return False
-
-    return True
-
-
-def _record_lineup(
-    lineup: Lineup,
-    pool: LineupPool,
-) -> None:
-    pool.lineups.append(lineup)
-
-    captain_key = lineup.captain.player_key
-
-    pool.captain_exposure[captain_key] = (
-        pool.captain_exposure.get(captain_key, 0) + 1
-    )
-
-    for player in lineup.players:
-        key = player.player_key
-
-        pool.player_exposure[key] = (
-            pool.player_exposure.get(key, 0) + 1
-        )
-
-
-def generate_lineup_pool(
-    players: list[DKPlayer],
-    projections: dict[str, Projection],
-    settings: PoolSettings | None = None,
-    rules: ContestRules = SHOWDOWN,
-    *,
-    seed: int | None = None,
-) -> LineupPool:
-    """Generate a diverse, exposure-controlled lineup pool."""
-
-    settings = settings or PoolSettings()
-
-    if settings.lineup_count <= 0:
-        raise ValueError("lineup_count must be greater than zero.")
-
-    if not 0 < settings.max_player_exposure <= 1:
-        raise ValueError(
-            "max_player_exposure must be between 0 and 1."
-        )
-
-    if not 0 < settings.max_captain_exposure <= 1:
-        raise ValueError(
-            "max_captain_exposure must be between 0 and 1."
-        )
-
-    pool = LineupPool()
-
-    # `seed` is accepted so the API can later expose deterministic runs.
-    # The current diversity mechanism is deterministic because it is driven
-    # by exposure penalties rather than random shuffling.
-    _ = seed
-
-    used_keys: dict[tuple, int] = {}
-
-    for _index in range(settings.lineup_count):
-        generated = False
-
-        for _attempt in range(settings.attempts_per_lineup):
-            player_penalties = _player_penalties(
-                players,
-                pool.player_exposure,
-                settings,
-            )
-
-            captain_penalties = _captain_penalties(
-                players,
-                pool.captain_exposure,
-                settings,
-            )
-
-            try:
-                lineup = build_lineup(
-                    players,
-                    projections,
-                    rules,
-                    player_penalties=player_penalties,
-                    captain_penalties=captain_penalties,
-                )
-            except OptimizerError:
-                break
-
-            errors = validate_lineup(lineup, rules)
-
-            if errors:
-                break
-
-            key = _lineup_key(lineup)
-            duplicates = used_keys.get(key, 0)
-
-            if duplicates >= settings.max_duplicate_lineups:
-                # Make the players in this lineup significantly more
-                # expensive for the next optimization pass.
-                for player in lineup.players:
-                    pool.player_exposure[player.player_key] = (
-                        pool.player_exposure.get(
-                            player.player_key,
-                            0,
-                        )
-                    )
-
-                # Increase the relevant captain penalty.
-                captain_key = lineup.captain.player_key
-                pool.captain_exposure[captain_key] = (
-                    pool.captain_exposure.get(
-                        captain_key,
-                        0,
-                    )
-                )
-
-                # Temporarily make this exact combination unattractive
-                # by adding an additional exposure pressure.
-                for player in lineup.players:
-                    player_penalties[player.player_key] = (
-                        player_penalties.get(
-                            player.player_key,
-                            0.0,
-                        ) + 25.0
-                    )
-
-                captain_penalties[lineup.captain.player_key] = (
-                    captain_penalties.get(
-                        lineup.captain.player_key,
-                        0.0,
-                    ) + 50.0
-                )
-
-                # Re-run optimizer with stronger penalties.
-                try:
-                    lineup = build_lineup(
-                        players,
-                        projections,
-                        rules,
-                        player_penalties=player_penalties,
-                        captain_penalties=captain_penalties,
-                    )
-                except OptimizerError:
-                    break
-
-                key = _lineup_key(lineup)
-
-                if used_keys.get(key, 0) >= settings.max_duplicate_lineups:
-                    continue
-
-            if not _candidate_is_allowed(
-                lineup,
-                pool,
-                settings,
-            ):
-                continue
-
-            _record_lineup(lineup, pool)
-            used_keys[key] = used_keys.get(key, 0) + 1
-            generated = True
-            break
-
-        if not generated:
-            break
-
-    if pool.count < settings.lineup_count:
-        pool.warnings.append(
-            f"Generated {pool.count} of "
-            f"{settings.lineup_count} requested lineups. "
-            "The remaining lineups could not satisfy the current "
-            "salary, team, projection, uniqueness, or exposure constraints."
-        )
-
-    if pool.unique_player_count < settings.min_unique_players:
-        pool.warnings.append(
-            f"Only {pool.unique_player_count} unique players were used; "
-            f"target was at least {settings.min_unique_players}."
-        )
-
-    return pool
-
-
-def pool_summary(pool: LineupPool) -> dict:
-    return {
-        "requested": None,
-        "generated": pool.count,
-        "unique_players": pool.unique_player_count,
-        "player_exposure": dict(
-            sorted(
-                pool.player_exposure.items(),
-                key=lambda item: (-item[1], item[0]),
-            )
-        ),
-        "captain_exposure": dict(
-            sorted(
-                pool.captain_exposure.items(),
-                key=lambda item: (-item[1], item[0]),
-            )
-        ),
-        "warnings": list(pool.warnings),
-    }
+    salary: int = 0
+
+    game_info: str = ""
+
+    team: str = ""
+
+    avg_points: float = 0.0
+
+
+# ============================================================
+# GAME INFORMATION
+# ============================================================
+
+class GameInfo(BaseModel):
+    """
+    Information about the game associated with a DFS slate.
+    """
+
+    raw: str = ""
+
+    away_team: str
+    home_team: str
+
+    kickoff_local: datetime
+    kickoff_utc: datetime
+
+    game_id: Optional[str] = None
+
+
+# ============================================================
+# GENERIC DFS PLAYER
+# ============================================================
+
+class DFSPlayer(BaseModel):
+    """
+    Provider-independent DFS player.
+
+    A player may have different IDs, salaries, or roster
+    positions depending on the DFS provider.
+    """
+
+    player_key: str
+
+    name: str
+
+    position: str
+
+    team: str
+
+    opponent: Optional[str] = None
+
+    dfs_id: str = ""
+
+    salary: int = 0
+
+    roster_positions: list[str] = Field(default_factory=list)
+
+    avg_points: float = 0.0
+
+    provider_ids: dict[str, str] = Field(default_factory=dict)
+
+    provider_salaries: dict[str, int] = Field(default_factory=dict)
+
+    supabase_player_id: Optional[int] = None
+
+    match_method: Optional[str] = None
+
+    extra: dict[str, Any] = Field(default_factory=dict)
+
+
+class DKPlayer(BaseModel):
+    """
+    Backward-compatible DraftKings player model.
+
+    Supports the traditional Showdown format where a player
+    has separate CPT and FLEX IDs/salaries.
+    """
+
+    player_key: str
+
+    name: str
+
+    position: str
+
+    team: str
+
+    flex_id: str
+
+    flex_salary: int
+
+    cpt_id: str
+
+    cpt_salary: int
+
+    avg_points: float = 0.0
+
+    supabase_player_id: Optional[int] = None
+
+    match_method: Optional[str] = None
+
+
+# ============================================================
+# CONTEST / ROSTER RULES
+# ============================================================
+
+class RosterRule(BaseModel):
+    """
+    Defines one roster slot.
+
+    Example:
+
+        slot="CPT"
+        count=1
+        eligible_positions=["QB", "RB", "WR", "TE", "K", "DST"]
+
+    or:
+
+        slot="FLEX"
+        count=5
+        eligible_positions=["QB", "RB", "WR", "TE", "K"]
+    """
+
+    slot: str
+
+    count: int = 1
+
+    eligible_positions: list[str] = Field(default_factory=list)
+
+
+class ContestRules(BaseModel):
+    """
+    Defines the actual rules that the lineup engine must enforce.
+
+    This prevents the engine from assuming that every contest is
+    DraftKings Showdown.
+    """
+
+    salary_cap: int
+
+    roster_size: int
+
+    slots: list[RosterRule] = Field(default_factory=list)
+
+    max_players_from_team: Optional[int] = None
+
+    min_players_from_team: Optional[int] = None
+
+    max_players_from_game: Optional[int] = None
+
+    allow_duplicate_players: bool = False
+
+    allow_duplicate_lineups: bool = False
+
+    require_captain: bool = False
+
+    captain_multiplier: Optional[float] = None
+
+    extra_rules: dict[str, Any] = Field(default_factory=dict)
+
+
+# ============================================================
+# PARSED DFS SLATE
+# ============================================================
+
+class ParsedSlate(BaseModel):
+    """
+    Normalized DFS slate after the uploaded salary/contest file
+    has been parsed.
+
+    This is only used when an uploaded file is actually identified
+    as DFS data.
+    """
+
+    provider: DFSProvider = DFSProvider.UNKNOWN
+
+    contest_type: ContestType = ContestType.CUSTOM
+
+    slots: list[str] = Field(default_factory=list)
+
+    game: Optional[GameInfo] = None
+
+    players: list[DFSPlayer] = Field(default_factory=list)
+
+    rules: Optional[ContestRules] = None
+
+    warnings: list[str] = Field(default_factory=list)
+
+    source_filename: Optional[str] = None
+
+    source_size_bytes: Optional[int] = None
+
+    total_source_rows: Optional[int] = None
+
+    parsed_rows: Optional[int] = None
+
+
+# ============================================================
+# GENERATED LINEUP MODELS
+# ============================================================
+
+class LineupPlayer(BaseModel):
+    """
+    A player occupying a specific roster slot in a generated lineup.
+    """
+
+    player_key: str
+
+    name: str
+
+    position: str
+
+    team: str
+
+    roster_position: str
+
+    salary: int
+
+    projected_points: float = 0.0
+
+    dfs_id: str = ""
+
+
+class Lineup(BaseModel):
+    """
+    One generated DFS lineup.
+    """
+
+    players: list[LineupPlayer] = Field(default_factory=list)
+
+    total_salary: int = 0
+
+    salary_remaining: int = 0
+
+    projected_points: float = 0.0
+
+    lineup_number: Optional[int] = None
+
+    warnings: list[str] = Field(default_factory=list)
+
+
+class LineupGenerationResult(BaseModel):
+    """
+    Final result returned by the DFS lineup engine.
+    """
+
+    provider: DFSProvider
+
+    contest_type: ContestType
+
+    lineups: list[Lineup] = Field(default_factory=list)
+
+    total_generated: int = 0
+
+    requested_count: int = 0
+
+    warnings: list[str] = Field(default_factory=list)
+
+    errors: list[str] = Field(default_factory=list)
+
+    processing_time_seconds: Optional[float] = None
+
+    source_filename: Optional[str] = None
