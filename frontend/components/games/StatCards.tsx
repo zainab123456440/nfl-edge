@@ -4,11 +4,12 @@
 
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { Activity, Radio, TrendingUp, BarChart3 } from "lucide-react";
+import { Activity, Clock, TrendingUp, BarChart3 } from "lucide-react";
 
 interface StatCardsProps {
   gamesThisWeek: number;
-  liveNow: number;
+  upcoming: number;
+  nextKickoff: string;        // e.g. "Sun 6:30 PM"
   biggestMove: number;
   averageTotal: number;
 }
@@ -48,11 +49,11 @@ const cards = [
     bg: "bg-sky-500/10",
   },
   {
-    key: "liveNow",
-    label: "Live now",
-    icon: Radio,
-    color: "text-[var(--red)]",
-    bg: "bg-red-500/10",
+    key: "upcoming",
+    label: "Upcoming",
+    icon: Clock,
+    color: "text-amber-500",
+    bg: "bg-amber-500/10",
   },
   {
     key: "biggestMove",
@@ -72,13 +73,14 @@ const cards = [
 
 export default function StatCards({
   gamesThisWeek,
-  liveNow,
+  upcoming,
+  nextKickoff,
   biggestMove,
   averageTotal,
 }: StatCardsProps) {
   const values = {
     gamesThisWeek,
-    liveNow,
+    upcoming,
     biggestMove,
     averageTotal,
   };
@@ -87,7 +89,7 @@ export default function StatCards({
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
       {cards.map((card, i) => {
         const Icon = card.icon;
-        const value = values[card.key];
+        const value = values[card.key as keyof typeof values];
         const isDecimal = card.key === "biggestMove" || card.key === "averageTotal";
 
         return (
@@ -107,15 +109,27 @@ export default function StatCards({
               </div>
             </div>
 
-            <div className={`text-2xl sm:text-3xl font-semibold tracking-tight ${card.color}`}>
-              {card.key === "biggestMove" && value > 0 && (
-                <span className="text-lg mr-0.5">+</span>
-              )}
-              <CountUp value={value} decimals={isDecimal ? 1 : 0} />
-              {card.key === "biggestMove" && (
-                <span className="text-base font-normal text-[var(--muted)] ml-1">pts</span>
-              )}
-            </div>
+            {/* Special rendering for Upcoming card */}
+            {card.key === "upcoming" ? (
+              <div>
+                <div className={`text-2xl sm:text-3xl font-semibold tracking-tight ${card.color}`}>
+                  <CountUp value={upcoming} />
+                </div>
+                <div className="mt-1 text-sm text-[var(--muted)]">
+                  Next: <span className="font-medium text-[var(--foreground)]">{nextKickoff}</span>
+                </div>
+              </div>
+            ) : (
+              <div className={`text-2xl sm:text-3xl font-semibold tracking-tight ${card.color}`}>
+                {card.key === "biggestMove" && value > 0 && (
+                  <span className="text-lg mr-0.5">+</span>
+                )}
+                <CountUp value={value} decimals={isDecimal ? 1 : 0} />
+                {card.key === "biggestMove" && (
+                  <span className="text-base font-normal text-[var(--muted)] ml-1">pts</span>
+                )}
+              </div>
+            )}
           </motion.div>
         );
       })}

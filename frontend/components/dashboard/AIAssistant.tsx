@@ -433,10 +433,6 @@ function safeFileName(name: string): string {
   return (name || "file").replace(/[^\w.\-]+/g, "_").slice(0, 120) || "file";
 }
 
-/**
- * Upload one file to Supabase Storage, then register it
- * via POST /assistant/files. Returns the permanent ai_files.id.
- */
 async function uploadAndRegisterFile(
   file: File,
   conversationId: string | null,
@@ -454,31 +450,31 @@ async function uploadAndRegisterFile(
     });
   }
 
+  const supabaseModule = "@supabase/supabase-js";
+  const { createClient } = await import(supabaseModule);
+
+  const supabase = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      global: {
+        headers: { Authorization: `Bearer ${token}` },
+      },
+    }
+  );
+
   const path = `${userId}/${crypto.randomUUID()}_${safeFileName(file.name)}`;
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-  const storagePath = path.split("/").map(encodeURIComponent).join("/");
-  const storageUrl = `${supabaseUrl.replace(/\/$/, "")}/storage/v1/object/${encodeURIComponent(STORAGE_BUCKET)}/${storagePath}`;
-  const storageHeaders = {
-    apikey: supabaseKey,
-    Authorization: `Bearer ${token}`,
-  };
 
-  const storageRes = await fetch(storageUrl, {
-    method: "POST",
-    headers: {
-      ...storageHeaders,
-      "Content-Type": file.type || "application/octet-stream",
-      "x-upsert": "true",
-    },
-    body: file,
-    signal,
-  });
+  const { error: storageError } = await supabase.storage
+    .from(STORAGE_BUCKET)
+    .upload(path, file, {
+      contentType: file.type || "application/octet-stream",
+      upsert: true,
+    });
 
-  if (!storageRes.ok) {
-    const errorText = await storageRes.text();
+  if (storageError) {
     throw new AssistantError("stream", {
-      detail: `Upload failed for ${file.name}: ${errorText || storageRes.statusText}`,
+      detail: `Upload failed for ${file.name}: ${storageError.message}`,
     });
   }
 
@@ -496,14 +492,7 @@ async function uploadAndRegisterFile(
 
   if (!registerRes.ok) {
     try {
-      await fetch(
-        `${supabaseUrl.replace(/\/$/, "")}/storage/v1/object/${encodeURIComponent(STORAGE_BUCKET)}`,
-        {
-          method: "DELETE",
-          headers: { ...storageHeaders, "Content-Type": "application/json" },
-          body: JSON.stringify({ prefixes: [path] }),
-        }
-      );
+      await supabase.storage.from(STORAGE_BUCKET).remove([path]);
     } catch {
       /* ignore */
     }
@@ -1086,10 +1075,34 @@ export function AIAssistant() {
             detail: state.timedOutReason,
           });
         } else {
-          return;
+          return; // cancelled on purpose
         }
       }
 
+      // -------------------------------------------------------
+      // Silent auto-retry on context_length_exceeded
+      // -------------------------------------------------------
+      const detailText =
+        failure instanceof AssistantError
+          ? (failure.detail || failure.message || "").toLowerCase()
+          : String(failure).toLowerCase();
+
+      const isContextError =
+        detailText.includes("context_length_exceeded") ||
+        detailText.includes("context window") ||
+        detailText.includes("input exceeds the context");
+
+      if (isContextError && !isRetry) {
+        console.warn(
+          "Context length exceeded – automatically retrying without large files…"
+        );
+        // Retry once with the same text but without re-attaching files
+        return send(text, true);
+      }
+
+      // -------------------------------------------------------
+      // Normal error handling
+      // -------------------------------------------------------
       console.error("Assistant request failed:", failure);
 
       const info = toErrorInfo(failure);
@@ -1301,7 +1314,6 @@ export function AIAssistant() {
                                   fill="none"
                                   stroke="currentColor"
                                   strokeWidth="1.7"
-                                  strokeLinecap="round"
                                   strokeLinejoin="round"
                                 >
                                   <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
@@ -1508,8 +1520,7 @@ export function AIAssistant() {
               Drop files to attach
             </p>
             <p className="mt-1 text-xs text-zinc-500">
-              Sli
-ps, screenshots, CSVs, PDFs
+              Slips, screenshots, CSVs, PDFs
             </p>
           </div>
         </div>

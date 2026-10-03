@@ -1,4 +1,3 @@
-
 "use client";
 
 import {
@@ -49,11 +48,13 @@ const MAX_WEEK = 18;
 function StatCard({
   label,
   value,
+  subtitle,
   loading,
   live = false,
 }: {
   label: string;
   value: string | number;
+  subtitle?: string;
   loading?: boolean;
   live?: boolean;
 }) {
@@ -67,9 +68,16 @@ function StatCard({
       {loading ? (
         <div className="mt-2 h-8 w-16 rounded skeleton" />
       ) : (
-        <p className="mt-1 text-3xl font-semibold tabular-nums text-[var(--text)]">
-          {value}
-        </p>
+        <>
+          <p className="mt-1 text-3xl font-semibold tabular-nums text-[var(--text)]">
+            {value}
+          </p>
+          {subtitle && (
+            <p className="mt-1 text-xs text-[var(--muted)]">
+              {subtitle}
+            </p>
+          )}
+        </>
       )}
     </div>
   );
@@ -432,13 +440,18 @@ function GamesContent() {
               />
 
               <StatCard
-                label="Live now"
-                value={
-                  stats?.liveNow ??
-                  liveCount
+                label="Upcoming"
+                value={upcomingCount}
+                subtitle={
+                  nextKickoff
+                    ? `Next: ${new Date(nextKickoff).toLocaleString([], {
+                        weekday: "short",
+                        hour: "numeric",
+                        minute: "2-digit",
+                      })}`
+                    : undefined
                 }
                 loading={isLoading}
-                live={isLive}
               />
 
               <StatCard
@@ -586,8 +599,3 @@ export default function GamesPage() {
     </Suspense>
   );
 }
-
-
-
-
-
