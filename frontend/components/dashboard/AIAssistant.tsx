@@ -132,6 +132,9 @@ const SUGGESTIONS = [
 const API_BASE =
   process.env.NEXT_PUBLIC_API_URL ?? "https://nfl-backend-eight.vercel.app";
 
+const STORAGE_BUCKET = "assistant-files";
+const MAX_FILES = 10;
+
 /* ───────────── Error handling ───────────── */
 
 type ErrorKind = "session" | "network" | "timeout" | "http" | "stream";
@@ -495,6 +498,111 @@ async function authenticatedFetch(
   return response;
 }
 
+/* ───────────── File upload helpers ───────────── */
+
+/** Extract user_id from the JWT (sub claim). */
+function getUserIdFromToken(token: string): string {
+  try {
+    const payload = JSON.parse(atob(token.split(".")[1]));
+    return payload.sub || payload.user_id || payload.id || "";
+  } catch {
+    return "";
+  }
+}
+
+/** Safe filename for Storage paths. */
+function safeFileName(name: string): string {
+  return (name || "file").replace(/[^\w.\-]+/g, "_").slice(0, 120) || "file";
+}
+
+/**
+ * Upload one file to Supabase Storage, then register it
+ * via POST /assistant/files. Returns the permanent ai_files.id.
+ */
+async function uploadAndRegisterFile(
+  file: File,
+  conversationId: string | null,
+  signal?: AbortSignal
+): Promise<string> {
+  const token = await getValidAccessToken();
+  if (!token) {
+    throw new AssistantError("session");
+  }
+
+  const userId = getUserIdFromToken(token);
+  if (!userId) {
+    throw new AssistantError("session", {
+      detail: "Could not identify the signed-in user.",
+    });
+  }
+
+  const storageBaseUrl = `${process.env.NEXT_PUBLIC_SUPABASE_URL!.replace(/\/$/, "")}/storage/v1/object`;
+  const storageHeaders = {
+    apikey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    Authorization: `Bearer ${token}`,
+  };
+  const path = `${userId}/${crypto.randomUUID()}_${safeFileName(file.name)}`;
+  const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+
+  // 1. Upload binary to Storage
+  const storageRes = await fetch(
+    `${storageBaseUrl}/${encodeURIComponent(STORAGE_BUCKET)}/${encodedPath}`,
+    {
+      method: "POST",
+      headers: {
+        ...storageHeaders,
+        "Content-Type": file.type || "application/octet-stream",
+        "x-upsert": "true",
+      },
+      body: file,
+    }
+  );
+
+  if (!storageRes.ok) {
+    const storageError = await storageRes.json().catch(() => null);
+    throw new AssistantError("stream", {
+      detail: `Upload failed for ${file.name}: ${storageError?.message || storageRes.statusText}`,
+    });
+  }
+
+  // 2. Register → creates the permanent ai_files row
+  const registerRes = await authenticatedFetch(`${API_BASE}/assistant/files`, {
+    method: "POST",
+    signal,
+    body: JSON.stringify({
+      storage_path: path,
+      name: file.name,
+      mime_type: file.type || "application/octet-stream",
+      size_bytes: file.size,
+      conversation_id: conversationId || undefined,
+    }),
+  });
+
+  if (!registerRes.ok) {
+    // Clean up Storage on registration failure
+    try {
+      await fetch(`${storageBaseUrl}/${encodeURIComponent(STORAGE_BUCKET)}`, {
+        method: "DELETE",
+        headers: { ...storageHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ prefixes: [path] }),
+      });
+    } catch {
+      /* ignore */
+    }
+    throw await errorFromResponse(registerRes);
+  }
+
+  const data = await registerRes.json();
+
+  if (!data?.id) {
+    throw new AssistantError("stream", {
+      detail: `Server did not return a file id for ${file.name}`,
+    });
+  }
+
+  return data.id as string;
+}
+
 /* ───────────── Formatting helpers ───────────── */
 
 const fmtSize = (b?: number) => {
@@ -675,7 +783,7 @@ export function AIAssistant() {
   const addFiles = (list: FileList | null) => {
     if (!list) return;
 
-    setFiles((prev) => [...prev, ...Array.from(list)].slice(0, 10));
+    setFiles((prev) => [...prev, ...Array.from(list)].slice(0, MAX_FILES));
   };
 
   const onDrop = (e: DragEvent) => {
@@ -981,11 +1089,35 @@ export function AIAssistant() {
 
     try {
       // -------------------------------------------------------
-      // 1. Upload + register files (if any)
+      // 1. Upload binaries to Storage + register via POST /assistant/files
       // -------------------------------------------------------
-      // Existing upload flow remains unchanged here.
-      // Backend currently receives file_ids.
       const fileIds: string[] = [];
+
+      if (sentFiles.length > 0) {
+        setStatus(
+          sentFiles.length === 1
+            ? "Uploading file…"
+            : `Uploading ${sentFiles.length} files…`
+        );
+
+        for (let i = 0; i < sentFiles.length; i++) {
+          const file = sentFiles[i];
+
+          setStatus(
+            sentFiles.length === 1
+              ? `Uploading ${file.name}…`
+              : `Uploading ${i + 1}/${sentFiles.length}: ${file.name}`
+          );
+
+          const id = await uploadAndRegisterFile(
+            file,
+            conversationId,
+            controller.signal
+          );
+
+          fileIds.push(id);
+        }
+      }
 
       // -------------------------------------------------------
       // 2. Call streaming chat endpoint
@@ -1563,7 +1695,8 @@ export function AIAssistant() {
             </p>
 
             <p className="mt-1 text-xs text-zinc-500">
-              Slips, screenshots, CSVs, PDFs
+              Sli
+ps, screenshots, CSVs, PDFs
             </p>
           </div>
         </div>
