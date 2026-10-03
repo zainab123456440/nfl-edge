@@ -94,20 +94,11 @@ type GeneratedFile = {
   created_at?: string;
 };
 
-/**
- * A user-facing description of something that went wrong.
- * Rendered as a dedicated error card instead of a plain chat bubble.
- */
 type ErrorInfo = {
-  /** Short headline, e.g. "Server error". */
   title: string;
-  /** The real message from the server / network layer, if we have one. */
   detail?: string;
-  /** Technical code shown as a small chip, e.g. "HTTP 500 Internal Server Error". */
   code?: string;
-  /** Whether a "Try again" button makes sense. */
   retryable: boolean;
-  /** The user text to re-send when "Try again" is pressed. */
   retryText?: string;
 };
 
@@ -118,7 +109,6 @@ type Msg = {
   files?: string[];
   generatedFiles?: GeneratedFile[];
   error?: ErrorInfo;
-  /** Soft warning shown under a message, e.g. "response may be incomplete". */
   notice?: string;
 };
 
@@ -139,23 +129,10 @@ const MAX_FILES = 10;
 
 type ErrorKind = "session" | "network" | "timeout" | "http" | "stream";
 
-/*
- * Time limits. Tune these to match your backend.
- *
- * CONNECT: max wait for the server to start responding.
- * STALL:   max silence between stream chunks once it has started.
- *          (Keep this above your longest quiet gap, e.g. a slow tool call,
- *          or have the backend send periodic "status" events.)
- * DOWNLOAD: max wait for the signed download URL.
- */
 const CONNECT_TIMEOUT_MS = 45000;
 const STALL_TIMEOUT_MS = 90000;
 const DOWNLOAD_TIMEOUT_MS = 30000;
 
-/**
- * Typed error used everywhere in this file, so the UI can decide how to
- * present a failure (title, detail, retry button) without parsing strings.
- */
 class AssistantError extends Error {
   kind: ErrorKind;
   status?: number;
@@ -191,11 +168,6 @@ class AssistantError extends Error {
   }
 }
 
-/**
- * Turn ANY value (string, Error, FastAPI validation array, nested
- * { detail | message | error } objects, ...) into a readable string.
- * Never returns "[object Object]".
- */
 function stringifyError(value: unknown, fallback = "Unknown error"): string {
   if (value == null) return fallback;
   if (typeof value === "string") return value.trim() || fallback;
@@ -212,7 +184,6 @@ function stringifyError(value: unknown, fallback = "Unknown error"): string {
   if (typeof value === "object") {
     const o = value as Record<string, unknown>;
 
-    // FastAPI validation item: { loc: [...], msg: "...", type: "..." }
     if (typeof o.msg === "string") {
       const loc = Array.isArray(o.loc)
         ? o.loc.filter((p) => p !== "body").join(".")
@@ -230,14 +201,12 @@ function stringifyError(value: unknown, fallback = "Unknown error"): string {
     ]) {
       if (o[key] != null) {
         const nested = stringifyError(o[key], "");
-
         if (nested) return nested;
       }
     }
 
     try {
       const json = JSON.stringify(value);
-
       return json && json !== "{}" ? json : fallback;
     } catch {
       return fallback;
@@ -247,7 +216,6 @@ function stringifyError(value: unknown, fallback = "Unknown error"): string {
   return fallback;
 }
 
-/** Human-friendly headline for an HTTP status. */
 function statusTitle(status?: number): string {
   if (!status) return "Request failed";
 
@@ -276,17 +244,14 @@ function statusTitle(status?: number): string {
 
   if (status >= 500) return "Server error";
   if (status >= 400) return "Request failed";
-
   return "Request failed";
 }
 
 function isRetryableStatus(status?: number): boolean {
   if (!status) return true;
-
   return status >= 500 || status === 408 || status === 429;
 }
 
-/** Build an AssistantError from a non-OK response, reading the body safely. */
 async function errorFromResponse(res: Response): Promise<AssistantError> {
   let detail = "";
 
@@ -297,15 +262,12 @@ async function errorFromResponse(res: Response): Promise<AssistantError> {
       try {
         detail = stringifyError(JSON.parse(raw), "");
       } catch {
-        // Non-JSON body (HTML error page, plain text, ...). Keep a short
-        // snippet, but skip full HTML documents since they aren't readable.
         const looksLikeHtml = /^\s*<(!doctype|html)/i.test(raw);
-
         detail = looksLikeHtml ? "" : raw.trim().slice(0, 300);
       }
     }
   } catch {
-    /* ignore body read failures */
+    /* ignore */
   }
 
   return new AssistantError("http", {
@@ -315,7 +277,6 @@ async function errorFromResponse(res: Response): Promise<AssistantError> {
   });
 }
 
-/** Convert anything thrown into a structured, displayable ErrorInfo. */
 function toErrorInfo(err: unknown): ErrorInfo {
   if (err instanceof AssistantError) {
     switch (err.kind) {
@@ -325,14 +286,12 @@ function toErrorInfo(err: unknown): ErrorInfo {
           detail: "Please sign in again to continue.",
           retryable: false,
         };
-
       case "network":
         return {
           title: "Can't reach the server",
           detail: err.detail || "Check your connection and try again.",
           retryable: true,
         };
-
       case "timeout":
         return {
           title: "The request timed out",
@@ -341,7 +300,6 @@ function toErrorInfo(err: unknown): ErrorInfo {
             "The server took too long to respond. Please try again.",
           retryable: true,
         };
-
       case "http":
         return {
           title: statusTitle(err.status),
@@ -349,7 +307,6 @@ function toErrorInfo(err: unknown): ErrorInfo {
           code: err.code,
           retryable: isRetryableStatus(err.status),
         };
-
       case "stream":
         return {
           title: "The assistant hit a problem",
@@ -359,9 +316,6 @@ function toErrorInfo(err: unknown): ErrorInfo {
     }
   }
 
-  // Note: network failures from fetch() are already wrapped as
-  // AssistantError("network") in authenticatedFetch, so any other error here
-  // (including a TypeError) is a genuine bug and should not be mislabeled.
   return {
     title: "Something went wrong",
     detail: stringifyError(err, "Please try again."),
@@ -371,12 +325,6 @@ function toErrorInfo(err: unknown): ErrorInfo {
 
 /* ───────────── Authentication helpers ───────────── */
 
-/**
- * Build authenticated headers using the current valid access token.
- *
- * getValidAccessToken() automatically refreshes an access token
- * when it is expired or close to expiry.
- */
 async function getAuthHeaders(): Promise<Record<string, string>> {
   const token = await getValidAccessToken();
 
@@ -391,7 +339,6 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
   return headers;
 }
 
-/** getValidAccessToken()/refreshAccessToken() threw: report it readably. */
 function authLookupError(err: unknown): Error {
   if (err instanceof AssistantError) return err;
   if ((err as any)?.name === "AbortError") return err as Error;
@@ -404,24 +351,6 @@ function authLookupError(err: unknown): Error {
   });
 }
 
-/**
- * Perform an authenticated request with one automatic auth retry.
- *
- * Flow:
- *
- * getValidAccessToken()
- *        ↓
- * request
- *        ↓
- * 401?
- *   ↓ yes
- * refreshAccessToken()
- *        ↓
- * retry once
- *
- * Throws AssistantError("session") if the session cannot be refreshed,
- * and AssistantError("network") if the request never reaches the server.
- */
 async function authenticatedFetch(
   url: string,
   options: RequestInit = {}
@@ -461,14 +390,6 @@ async function authenticatedFetch(
 
   let response = await doFetch(headers);
 
-  /*
-   * Unexpected 401.
-   *
-   * getValidAccessToken() should normally prevent this, but a token
-   * can expire/revoke between validation and the actual request.
-   *
-   * Refresh once and retry.
-   */
   if (response.status === 401) {
     let refreshedToken: string | null | undefined;
 
@@ -489,7 +410,6 @@ async function authenticatedFetch(
 
     response = await doFetch(headers);
 
-    // Still unauthorized with a fresh token: the session is really gone.
     if (response.status === 401) {
       throw new AssistantError("session");
     }
@@ -500,7 +420,6 @@ async function authenticatedFetch(
 
 /* ───────────── File upload helpers ───────────── */
 
-/** Extract user_id from the JWT (sub claim). */
 function getUserIdFromToken(token: string): string {
   try {
     const payload = JSON.parse(atob(token.split(".")[1]));
@@ -510,7 +429,6 @@ function getUserIdFromToken(token: string): string {
   }
 }
 
-/** Safe filename for Storage paths. */
 function safeFileName(name: string): string {
   return (name || "file").replace(/[^\w.\-]+/g, "_").slice(0, 120) || "file";
 }
@@ -536,36 +454,34 @@ async function uploadAndRegisterFile(
     });
   }
 
-  const storageBaseUrl = `${process.env.NEXT_PUBLIC_SUPABASE_URL!.replace(/\/$/, "")}/storage/v1/object`;
+  const path = `${userId}/${crypto.randomUUID()}_${safeFileName(file.name)}`;
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+  const storagePath = path.split("/").map(encodeURIComponent).join("/");
+  const storageUrl = `${supabaseUrl.replace(/\/$/, "")}/storage/v1/object/${encodeURIComponent(STORAGE_BUCKET)}/${storagePath}`;
   const storageHeaders = {
-    apikey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    apikey: supabaseKey,
     Authorization: `Bearer ${token}`,
   };
-  const path = `${userId}/${crypto.randomUUID()}_${safeFileName(file.name)}`;
-  const encodedPath = path.split("/").map(encodeURIComponent).join("/");
 
-  // 1. Upload binary to Storage
-  const storageRes = await fetch(
-    `${storageBaseUrl}/${encodeURIComponent(STORAGE_BUCKET)}/${encodedPath}`,
-    {
-      method: "POST",
-      headers: {
-        ...storageHeaders,
-        "Content-Type": file.type || "application/octet-stream",
-        "x-upsert": "true",
-      },
-      body: file,
-    }
-  );
+  const storageRes = await fetch(storageUrl, {
+    method: "POST",
+    headers: {
+      ...storageHeaders,
+      "Content-Type": file.type || "application/octet-stream",
+      "x-upsert": "true",
+    },
+    body: file,
+    signal,
+  });
 
   if (!storageRes.ok) {
-    const storageError = await storageRes.json().catch(() => null);
+    const errorText = await storageRes.text();
     throw new AssistantError("stream", {
-      detail: `Upload failed for ${file.name}: ${storageError?.message || storageRes.statusText}`,
+      detail: `Upload failed for ${file.name}: ${errorText || storageRes.statusText}`,
     });
   }
 
-  // 2. Register → creates the permanent ai_files row
   const registerRes = await authenticatedFetch(`${API_BASE}/assistant/files`, {
     method: "POST",
     signal,
@@ -579,13 +495,15 @@ async function uploadAndRegisterFile(
   });
 
   if (!registerRes.ok) {
-    // Clean up Storage on registration failure
     try {
-      await fetch(`${storageBaseUrl}/${encodeURIComponent(STORAGE_BUCKET)}`, {
-        method: "DELETE",
-        headers: { ...storageHeaders, "Content-Type": "application/json" },
-        body: JSON.stringify({ prefixes: [path] }),
-      });
+      await fetch(
+        `${supabaseUrl.replace(/\/$/, "")}/storage/v1/object/${encodeURIComponent(STORAGE_BUCKET)}`,
+        {
+          method: "DELETE",
+          headers: { ...storageHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ prefixes: [path] }),
+        }
+      );
     } catch {
       /* ignore */
     }
@@ -654,7 +572,7 @@ function ErrorCard({
       setCopied(true);
       setTimeout(() => setCopied(false), 1800);
     } catch {
-      /* clipboard may be unavailable; fail silently */
+      /* ignore */
     }
   };
 
@@ -735,6 +653,7 @@ function ErrorCard({
 /* ───────────── Assistant ───────────── */
 
 export function AIAssistant() {
+  // Always start fresh – no history is loaded
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [files, setFiles] = useState<File[]>([]);
@@ -750,16 +669,8 @@ export function AIAssistant() {
   const fileRef = useRef<HTMLInputElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
 
-  /*
-   * Tracks whether the current stream already produced usable output.
-   *
-   * This prevents a late SSE timeout/error from turning an otherwise
-   * successful assistant response or generated file into a frontend error.
-   */
   const streamSucceededRef = useRef(false);
   const generatedFilesReceivedRef = useRef(0);
-
-  /* Lets us cancel an in-flight request when the component unmounts. */
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => () => abortRef.current?.abort(), []);
@@ -773,16 +684,13 @@ export function AIAssistant() {
 
   useEffect(() => {
     const ta = taRef.current;
-
     if (!ta) return;
-
     ta.style.height = "auto";
     ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
   }, [input]);
 
   const addFiles = (list: FileList | null) => {
     if (!list) return;
-
     setFiles((prev) => [...prev, ...Array.from(list)].slice(0, MAX_FILES));
   };
 
@@ -792,7 +700,6 @@ export function AIAssistant() {
     addFiles(e.dataTransfer.files);
   };
 
-  /** Append an error card to the conversation. */
   const pushError = (error: ErrorInfo) => {
     setMessages((m) => [
       ...m,
@@ -834,17 +741,11 @@ export function AIAssistant() {
         });
       }
 
-      /*
-       * Use an anchor instead of window.open so the browser treats this
-       * as an actual file download when Supabase provides the signed URL.
-       */
       const anchor = document.createElement("a");
-
       anchor.href = data.url;
       anchor.download = file.name || "download";
       anchor.target = "_blank";
       anchor.rel = "noopener noreferrer";
-
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
@@ -862,12 +763,10 @@ export function AIAssistant() {
 
       pushError({
         ...info,
-        // Keep the session-expired headline as is; otherwise say which file failed.
         title:
           failure instanceof AssistantError && failure.kind === "session"
             ? info.title
             : `Couldn't download ${file.name || "the file"}`,
-        // The download button on the file card is the retry path here.
         retryable: false,
       });
     } finally {
@@ -883,21 +782,15 @@ export function AIAssistant() {
 
     if ((!text && files.length === 0) || busy) return;
 
-    /*
-     * Reset stream state for this request.
-     */
     streamSucceededRef.current = false;
     generatedFilesReceivedRef.current = 0;
 
     const sentFiles = isRetry ? [] : [...files];
 
-    // The placeholder assistant message id, so we can clean it up on failure.
     let assistantMsgId: string | null = null;
     let assistantText = "";
 
-    // Cancellation + timeout bookkeeping for this request.
     const controller = new AbortController();
-
     abortRef.current = controller;
 
     const state = {
@@ -910,14 +803,12 @@ export function AIAssistant() {
 
     const armTimer = (ms: number, reason: string) => {
       if (timer) clearTimeout(timer);
-
       timer = setTimeout(() => {
         state.timedOutReason = reason;
         controller.abort();
       }, ms);
     };
 
-    // Optimistic user message (skipped when retrying an existing one)
     if (!isRetry) {
       setMessages((m) => [
         ...m,
@@ -936,7 +827,6 @@ export function AIAssistant() {
     setBusy(true);
     setStatus("Thinking…");
 
-    /** Did this request already produce something useful? */
     const hasOutput = () =>
       streamSucceededRef.current ||
       assistantText.trim().length > 0 ||
@@ -944,35 +834,27 @@ export function AIAssistant() {
 
     const updateAssistant = (patch: (msg: Msg) => Msg) => {
       const id = assistantMsgId;
-
       if (!id) return;
-
       setMessages((m) => m.map((msg) => (msg.id === id ? patch(msg) : msg)));
     };
 
-    /** Handle one parsed SSE event. Throws AssistantError on fatal errors. */
     const handleEvent = (event: any) => {
       if (!event || typeof event !== "object") return;
 
-      /* Conversation */
       if (event.type === "conversation") {
         if (event.conversation_id) {
           setConversationId(event.conversation_id);
         }
-
         return;
       }
 
-      /* Status / progress */
       if (event.type === "status" || event.type === "thinking") {
         setStatus(
           stringifyError(event.message ?? event.content, "Working…")
         );
-
         return;
       }
 
-      /* Streaming text */
       if (
         event.type === "token" ||
         event.type === "content" ||
@@ -982,21 +864,15 @@ export function AIAssistant() {
 
         if (typeof chunk === "string" && chunk) {
           assistantText += chunk;
-
-          // We have received usable assistant output.
           streamSucceededRef.current = true;
-
           const snapshot = assistantText;
-
           updateAssistant((msg) => ({ ...msg, text: snapshot }));
         }
 
         setStatus("");
-
         return;
       }
 
-      /* Full assistant message */
       if (event.type === "message" && event.role === "assistant") {
         const content = event.content || "";
 
@@ -1006,20 +882,15 @@ export function AIAssistant() {
         }
 
         const snapshot = assistantText;
-
         updateAssistant((msg) => ({ ...msg, text: snapshot }));
-
         return;
       }
 
-      /* Generated file */
       if (event.type === "file") {
         const generatedFile = event.file || event.data || event;
 
         if (generatedFile && generatedFile.id && generatedFile.name) {
           generatedFilesReceivedRef.current += 1;
-
-          // A generated file is successful output.
           streamSucceededRef.current = true;
 
           updateAssistant((msg) => ({
@@ -1029,34 +900,25 @@ export function AIAssistant() {
         }
 
         setStatus("");
-
         return;
       }
 
-      /* Error */
       if (event.type === "error") {
         const detail = stringifyError(
           event.message ?? event.detail ?? event.error,
           "Assistant error"
         );
 
-        /*
-         * Sometimes the backend finishes producing the useful response/file
-         * and then emits a late timeout/error while closing the stream.
-         * If we already have usable output, don't turn that into a failure.
-         */
         if (hasOutput()) {
           console.warn("Ignoring late stream error after output:", detail);
           state.interrupted = true;
           setStatus("");
-
           return;
         }
 
         throw new AssistantError("stream", { detail });
       }
 
-      /* Done */
       if (event.type === "done") {
         state.sawDone = true;
         streamSucceededRef.current = hasOutput();
@@ -1064,7 +926,6 @@ export function AIAssistant() {
       }
     };
 
-    /** Parse one SSE block (may contain several lines) and handle it. */
     const processPart = (part: string) => {
       const data = part
         .split("\n")
@@ -1080,7 +941,6 @@ export function AIAssistant() {
       try {
         event = JSON.parse(data);
       } catch {
-        // Ignore malformed SSE payloads.
         return;
       }
 
@@ -1147,12 +1007,9 @@ export function AIAssistant() {
       const decoder = new TextDecoder();
 
       let buffer = "";
-
       const newId = crypto.randomUUID();
-
       assistantMsgId = newId;
 
-      // Add empty assistant message that we will fill
       setMessages((m) => [
         ...m,
         {
@@ -1165,17 +1022,14 @@ export function AIAssistant() {
 
       try {
         while (true) {
-          // Re-arm the stall timer before every read.
           armTimer(STALL_TIMEOUT_MS, "The assistant stopped responding.");
 
           const { done, value } = await reader.read();
-
           if (done) break;
 
           buffer += decoder.decode(value, { stream: true });
 
           const parts = buffer.split("\n\n");
-
           buffer = parts.pop() || "";
 
           for (const part of parts) {
@@ -1183,27 +1037,19 @@ export function AIAssistant() {
           }
         }
 
-        /*
-         * Process a final SSE event if the server closed the stream
-         * without a trailing blank line.
-         */
         buffer += decoder.decode();
-
         if (buffer.trim()) {
           processPart(buffer);
         }
       } catch (streamErr) {
-        // Fatal errors we raised ourselves go straight to the outer handler.
         if (streamErr instanceof AssistantError) throw streamErr;
 
-        // Otherwise the connection broke (or stalled) while reading.
         const aborted = (streamErr as any)?.name === "AbortError";
 
         if (hasOutput()) {
           console.warn("Stream interrupted after output:", streamErr);
           state.interrupted = true;
         } else if (aborted) {
-          // Let the outer handler turn this into a timeout / cancel.
           throw streamErr;
         } else {
           throw new AssistantError("network", {
@@ -1215,15 +1061,12 @@ export function AIAssistant() {
 
       streamSucceededRef.current = hasOutput();
 
-      // Nothing was streamed at all: treat as a real failure.
       if (!hasOutput()) {
         throw new AssistantError("stream", {
           detail: "The assistant finished without sending a response.",
         });
       }
 
-      // The answer arrived but the stream broke before the "done" signal:
-      // keep what we have, and tell the user it may be cut short.
       if (state.interrupted && !state.sawDone) {
         const why = state.timedOutReason
           ? "The assistant stopped responding"
@@ -1243,19 +1086,16 @@ export function AIAssistant() {
             detail: state.timedOutReason,
           });
         } else {
-          // Cancelled on purpose (e.g. the component unmounted): stay quiet.
           return;
         }
       }
 
-      // Genuine assistant/backend failure.
       console.error("Assistant request failed:", failure);
 
       const info = toErrorInfo(failure);
       const placeholderId = assistantMsgId;
 
       setMessages((m) => {
-        // Drop the empty assistant bubble; keep it if it holds partial output.
         const cleaned = m.filter(
           (msg) =>
             !(
@@ -1280,18 +1120,14 @@ export function AIAssistant() {
       });
     } finally {
       if (timer) clearTimeout(timer);
-
       if (abortRef.current === controller) abortRef.current = null;
-
       setBusy(false);
       setStatus("");
     }
   };
 
-  /** Remove an error card and re-send the original question. */
   const retry = (errorMsgId: string, retryText?: string) => {
     if (!retryText || busy) return;
-
     setMessages((m) => m.filter((msg) => msg.id !== errorMsgId));
     send(retryText, true);
   };
@@ -1318,7 +1154,6 @@ export function AIAssistant() {
       onDrop={onDrop}
       className="relative overflow-hidden rounded-2xl border border-zinc-800/80 bg-zinc-950/80 shadow-[0_0_0_1px_rgba(255,255,255,0.03),0_20px_50px_-20px_rgba(0,0,0,0.7)] backdrop-blur"
     >
-      {/* Top glow */}
       <div
         aria-hidden
         className="pointer-events-none absolute inset-x-8 top-0 h-px bg-gradient-to-r from-transparent via-sky-400/40 to-transparent"
@@ -1346,7 +1181,6 @@ export function AIAssistant() {
             <h2 className="text-sm font-semibold text-zinc-100">
               NFL Edge AI
             </h2>
-
             <p className="text-xs text-zinc-500">Trends · Props · Insights</p>
           </div>
         </div>
@@ -1357,7 +1191,7 @@ export function AIAssistant() {
         </span>
       </div>
 
-      {/* Conversation */}
+      {/* Conversation – always starts empty */}
       <div
         ref={scrollRef}
         className="h-[460px] overflow-y-auto px-4 py-5 sm:h-[520px] sm:px-5 lg:h-[560px]"
@@ -1399,7 +1233,6 @@ export function AIAssistant() {
                       : "max-w-[85%] rounded-2xl rounded-bl-md border border-zinc-700/80 bg-zinc-900/80 px-4 py-2.5 text-sm text-zinc-200"
                   }
                 >
-                  {/* Error card */}
                   {m.error && (
                     <ErrorCard
                       error={m.error}
@@ -1412,7 +1245,6 @@ export function AIAssistant() {
                     />
                   )}
 
-                  {/* User attached files */}
                   {m.files && m.files.length > 0 && (
                     <div className="mb-1.5 flex flex-wrap gap-1.5">
                       {m.files.map((f) => (
@@ -1430,14 +1262,12 @@ export function AIAssistant() {
                     </div>
                   )}
 
-                  {/* Message text */}
                   {m.text && (
                     <p className="whitespace-pre-wrap leading-relaxed">
                       {m.text}
                     </p>
                   )}
 
-                  {/* Soft warning (e.g. response cut short) */}
                   {m.notice && (
                     <p
                       role="status"
@@ -1450,7 +1280,6 @@ export function AIAssistant() {
                     </p>
                   )}
 
-                  {/* Generated files */}
                   {m.role === "assistant" &&
                     m.generatedFiles &&
                     m.generatedFiles.length > 0 && (
@@ -1458,7 +1287,6 @@ export function AIAssistant() {
                         {m.generatedFiles.map((file) => {
                           const type = fileType(file);
                           const size = fmtSize(file.size_bytes);
-
                           const isDownloading = downloadingFileId === file.id;
 
                           return (
@@ -1466,7 +1294,6 @@ export function AIAssistant() {
                               key={file.id}
                               className="flex items-center gap-3 rounded-xl border border-zinc-700/80 bg-zinc-950/80 p-3 shadow-sm"
                             >
-                              {/* File icon */}
                               <div className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-sky-500/10 text-sky-400 ring-1 ring-sky-400/20">
                                 <svg
                                   viewBox="0 0 24 24"
@@ -1484,7 +1311,6 @@ export function AIAssistant() {
                                 </svg>
                               </div>
 
-                              {/* File info */}
                               <div className="min-w-0 flex-1">
                                 <p
                                   className="truncate text-sm font-medium text-zinc-100"
@@ -1492,14 +1318,12 @@ export function AIAssistant() {
                                 >
                                   {file.name}
                                 </p>
-
                                 <p className="mt-0.5 text-[11px] text-zinc-500">
                                   {type}
                                   {size ? ` · ${size}` : ""}
                                 </p>
                               </div>
 
-                              {/* Download button */}
                               <button
                                 type="button"
                                 onClick={() => downloadGeneratedFile(file)}
@@ -1521,7 +1345,6 @@ export function AIAssistant() {
                                         strokeWidth="2"
                                         className="opacity-30"
                                       />
-
                                       <path
                                         d="M21 12a9 9 0 0 0-9-9"
                                         stroke="currentColor"
@@ -1529,7 +1352,6 @@ export function AIAssistant() {
                                         strokeLinecap="round"
                                       />
                                     </svg>
-
                                     Downloading…
                                   </>
                                 ) : (
@@ -1547,7 +1369,6 @@ export function AIAssistant() {
                                       <path d="M7 10l5 5 5-5" />
                                       <path d="M5 21h14" />
                                     </svg>
-
                                     Download
                                   </>
                                 )}
@@ -1561,7 +1382,6 @@ export function AIAssistant() {
               </li>
             ))}
 
-            {/* Busy indicator */}
             {busy && (
               <li
                 className="flex justify-start"
@@ -1573,13 +1393,10 @@ export function AIAssistant() {
                       <span
                         key={d}
                         className="h-1.5 w-1.5 animate-bounce rounded-full bg-sky-400"
-                        style={{
-                          animationDelay: `${d}ms`,
-                        }}
+                        style={{ animationDelay: `${d}ms` }}
                       />
                     ))}
                   </div>
-
                   <span className="text-sm text-sky-300/90">
                     {status || "Working…"}
                   </span>
@@ -1600,9 +1417,7 @@ export function AIAssistant() {
                 className="flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-900 py-1.5 pl-2.5 pr-1 text-xs text-zinc-300"
               >
                 <span className="max-w-[150px] truncate">{f.name}</span>
-
                 <span className="text-zinc-500">{fmtSize(f.size)}</span>
-
                 <button
                   type="button"
                   onClick={() =>
@@ -1686,14 +1501,12 @@ export function AIAssistant() {
         </p>
       </div>
 
-      {/* Drop overlay */}
       {dragging && (
         <div className="absolute inset-0 z-10 grid place-items-center bg-zinc-950/90 backdrop-blur-sm">
           <div className="rounded-xl border border-dashed border-sky-400/60 px-8 py-6 text-center">
             <p className="text-sm font-medium text-sky-300">
               Drop files to attach
             </p>
-
             <p className="mt-1 text-xs text-zinc-500">
               Sli
 ps, screenshots, CSVs, PDFs
