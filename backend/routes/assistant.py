@@ -1,24 +1,5 @@
-"""
-routes/assistant.py
 
-AI assistant endpoints (all require a logged-in user):
 
-    POST   /assistant/chat
-    POST   /assistant/files
-    GET    /assistant/files
-    GET    /assistant/files/{id}/download
-    DELETE /assistant/files/{id}
-    GET    /assistant/conversations
-    GET    /assistant/conversations/{id}
-    PATCH  /assistant/conversations/{id}
-    DELETE /assistant/conversations/{id}
-
-The route layer:
-- authenticates the user
-- creates a user-scoped Supabase client for user-owned reads
-- validates ownership
-- delegates AI/database work to the services
-"""
 
 from __future__ import annotations
 
@@ -61,6 +42,7 @@ MAX_ATTACHMENTS = 10
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _ctx(user: dict = Depends(get_current_user)):
     """
@@ -146,6 +128,7 @@ def _file_http_error(exc: files.FileError) -> HTTPException:
 # Chat
 # ---------------------------------------------------------------------------
 
+
 @router.post("/chat")
 def chat(
     body: ChatRequest,
@@ -169,15 +152,29 @@ def chat(
             detail="The AI service is not configured.",
         )
 
+    # ---------------------------------------------------------------
+    # Never-fail message + file_ids handling
+    # ---------------------------------------------------------------
     message = (body.message or "").strip()
 
-    if not message and not body.file_ids:
+    file_ids = [
+        str(fid)
+        for fid in (body.file_ids or [])
+        if fid
+    ]
+
+    # Only reject when BOTH are empty
+    if not message and not file_ids:
         raise HTTPException(
             status_code=400,
             detail="Please enter a message or attach a file.",
         )
 
-    if len(body.file_ids) > MAX_ATTACHMENTS:
+    # Always have a usable message when files are present
+    if not message and file_ids:
+        message = "Please analyze the uploaded file(s)."
+
+    if len(file_ids) > MAX_ATTACHMENTS:
         raise HTTPException(
             status_code=400,
             detail=f"Attach at most {MAX_ATTACHMENTS} files.",
@@ -224,14 +221,6 @@ def chat(
         # ---------------------------------------------------------------
         # Validate uploaded files belong to the authenticated user
         # ---------------------------------------------------------------
-
-        file_ids = list(
-            dict.fromkeys(
-                str(fid)
-                for fid in (body.file_ids or [])
-                if fid
-            )
-        )
 
         if file_ids:
             found = {
@@ -334,6 +323,7 @@ def chat(
 # Files
 # ---------------------------------------------------------------------------
 
+
 @router.post(
     "/files",
     response_model=FileOut,
@@ -429,6 +419,7 @@ def delete_file(
 # ---------------------------------------------------------------------------
 # Conversations
 # ---------------------------------------------------------------------------
+
 
 @router.get(
     "/conversations",

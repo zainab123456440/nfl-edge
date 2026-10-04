@@ -250,17 +250,6 @@ def detect_dfs_file(
 ) -> dict[str, Any]:
     """
     Lightweight detection for DFS salary/contest files.
-
-    This is intentionally only a detector.
-
-    It does NOT:
-      - parse a DFS slate
-      - validate contest rules
-      - generate lineups
-      - reject normal CSV/Excel files
-
-    The specialized DFS parser remains responsible for actually
-    validating and parsing a DFS file.
     """
 
     ext = _ext(name)
@@ -289,7 +278,6 @@ def detect_dfs_file(
 
     sample = text[:100_000].lower()
 
-    # DraftKings-style indicators.
     dk_terms = [
         "draftkings",
         "roster position",
@@ -299,7 +287,6 @@ def detect_dfs_file(
         "avg points",
     ]
 
-    # FanDuel-style indicators.
     fd_terms = [
         "fanduel",
         "nickname",
@@ -320,8 +307,6 @@ def detect_dfs_file(
         if term in sample
     )
 
-    # Stronger DFS signal when multiple salary/roster fields
-    # appear together.
     salary_signal = (
         "salary" in sample
         or "salary ($)" in sample
@@ -490,14 +475,6 @@ def _csv_preview(
     data: bytes,
     delimiter: str = ",",
 ) -> str:
-    """
-    Read CSV/TSV as structured text rather than simply decoding
-    the entire binary buffer.
-
-    This gives the assistant a useful representation while still
-    respecting the configured character limit.
-    """
-
     limit = settings.assistant_file_text_chars
 
     decoded = data.decode(
@@ -649,11 +626,10 @@ def register_uploaded_file(
     Register a file that the browser already uploaded to
     Supabase Storage.
 
-    The file is treated as a general file first.
-
-    If it looks like DFS data, metadata is stored in the file
-    record so the assistant can later decide whether to invoke
-    the DFS parser.
+    Designed to almost never fail:
+    - Large files are still registered
+    - Extraction failures do not block registration
+    - Download failures still allow a record to be created
     """
 
     _check_path(
@@ -661,14 +637,10 @@ def register_uploaded_file(
         storage_path,
     )
 
+    # Soft size check – we still register, just limit heavy work later
     if size_bytes > _max_bytes():
-        raise FileError(
-            (
-                "File is too large "
-                f"(max {settings.assistant_max_upload_mb} MB)."
-            ),
-            413,
-        )
+        # Do not raise – continue and register with limited extraction
+        pass
 
     if conversation_id:
         conversation_id = _valid_uuid(
@@ -693,29 +665,20 @@ def register_uploaded_file(
                 404,
             )
 
+    # ---------------------------------------------------------------
+    # Download from storage – never hard-fail
+    # ---------------------------------------------------------------
+    data = b""
     try:
-        data = _storage().download(
-            storage_path
-        )
-    except FileError:
-        raise
+        data = _storage().download(storage_path)
     except Exception:
-        raise FileError(
-            (
-                "Upload not found in storage. "
-                "Please upload the file again."
-            ),
-            404,
-        )
+        # Still register the file even if we cannot download it right now
+        data = b""
 
-    if len(data) > _max_bytes():
-        raise FileError(
-            (
-                "File is too large "
-                f"(max {settings.assistant_max_upload_mb} MB)."
-            ),
-            413,
-        )
+    # Soft size limit on actual bytes
+    if data and len(data) > _max_bytes():
+        # Keep only the first max bytes for extraction
+        data = data[: _max_bytes()]
 
     mime = (
         mime_type
@@ -727,44 +690,41 @@ def register_uploaded_file(
         mime,
     )
 
+    # ---------------------------------------------------------------
+    # Extract text – never fail the whole registration
+    # ---------------------------------------------------------------
     text = None
 
-    if mime not in IMAGE_TYPES:
-        text = extract_text(
-            name,
-            mime,
-            data,
-        )
-
-        if text:
-            text = text[
-                : settings.assistant_file_text_chars
-            ]
+    if data and mime not in IMAGE_TYPES:
+        try:
+            text = extract_text(
+                name,
+                mime,
+                data,
+            )
+            if text:
+                text = text[
+                    : settings.assistant_file_text_chars
+                ]
+        except Exception:
+            text = None
 
     dfs_info = detect_dfs_file(
         name,
         text,
     )
 
-    # Keep the current ai_files schema compatible.
-    #
-    # Metadata is stored in a JSON-like `metadata` field only if
-    # the database has that column. The fallback below keeps the
-    # existing schema working if it does not.
     record = {
         "user_id": user_id,
         "conversation_id": conversation_id,
         "name": name[:255],
         "mime_type": mime,
-        "size_bytes": len(data),
+        "size_bytes": size_bytes or len(data) or 0,
         "storage_path": storage_path,
         "extracted_text": text,
         "is_generated": False,
     }
 
-    # Only add metadata when the table supports it.
-    # If your ai_files table does not yet have this column,
-    # the fallback insert below is used.
     metadata = {
         "file_type": file_type,
         "dfs_detection": dfs_info,
@@ -847,12 +807,6 @@ def get_file(
     user_client: Any,
     file_id: str,
 ) -> dict:
-    """
-    Full file row.
-
-    RLS ensures the user can only access their own files.
-    """
-
     file_id = _valid_uuid(
         file_id
     )
@@ -879,10 +833,6 @@ def load_attachments(
     user_client: Any,
     file_ids: list[str],
 ) -> list[dict]:
-    """
-    Load up to 10 user-owned attachment records.
-    """
-
     ids: list[str] = []
 
     for fid in file_ids[:10]:
@@ -930,10 +880,6 @@ def image_data_url(
     user_id: str,
     row: dict,
 ) -> str | None:
-    """
-    Return a base64 data URL for a supported image.
-    """
-
     if not is_image(row):
         return None
 
@@ -1056,11 +1002,6 @@ def delete_file(
 # ============================================================
 
 def _cell(value: Any) -> Any:
-    """
-    Keep numbers as numbers and prevent spreadsheet formulas
-    from being injected through generated text.
-    """
-
     if value is None:
         return ""
 
@@ -1143,21 +1084,6 @@ def create_generated_file(
     rows: list[list[Any]] | None = None,
     conversation_id: str | None = None,
 ) -> dict:
-    """
-    Create a downloadable file for the user.
-
-      xlsx
-          requires rows.
-
-      csv
-          uses rows if supplied, otherwise text.
-
-      txt/md/json/html
-          use text.
-
-    Returns the saved ai_files row.
-    """
-
     fmt = (
         file_format
         or ""

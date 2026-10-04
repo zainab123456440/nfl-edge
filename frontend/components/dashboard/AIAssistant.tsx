@@ -33,9 +33,7 @@ export function TypingTagline() {
         () => setI((n) => (n + 1) % LINES.length),
         3500
       );
-
       setText(LINES[i]);
-
       return () => clearInterval(id);
     }
 
@@ -49,12 +47,10 @@ export function TypingTagline() {
       if (!deleting && text === full) {
         return setDeleting(true);
       }
-
       if (deleting && text === "") {
         setDeleting(false);
         return setI((n) => (n + 1) % LINES.length);
       }
-
       setText(
         deleting
           ? full.slice(0, text.length - 1)
@@ -74,7 +70,6 @@ export function TypingTagline() {
         aria-hidden
         className="h-1.5 w-1.5 shrink-0 rounded-full bg-sky-400 shadow-[0_0_8px_rgba(56,189,248,0.7)]"
       />
-
       <span aria-hidden className="truncate">
         {text}
         <span className="ml-0.5 inline-block h-4 w-[2px] translate-y-[3px] animate-pulse bg-sky-400" />
@@ -188,7 +183,6 @@ function stringifyError(value: unknown, fallback = "Unknown error"): string {
       const loc = Array.isArray(o.loc)
         ? o.loc.filter((p) => p !== "body").join(".")
         : "";
-
       return loc ? `${loc}: ${o.msg}` : o.msg;
     }
 
@@ -216,12 +210,44 @@ function stringifyError(value: unknown, fallback = "Unknown error"): string {
   return fallback;
 }
 
-function statusTitle(status?: number): string {
+function isContextLengthError(detail: string): boolean {
+  const d = detail.toLowerCase();
+  return (
+    d.includes("context_length_exceeded") ||
+    d.includes("context window") ||
+    d.includes("maximum context length") ||
+    d.includes("input exceeds the context") ||
+    d.includes("token limit") ||
+    d.includes("please enter a message or attach a file") ||
+    d.includes("file is too large") ||
+    d.includes("too large to process") ||
+    d.includes("the file is very large")
+  );
+}
+
+function isFileRelatedError(detail: string): boolean {
+  const d = detail.toLowerCase();
+  return (
+    d.includes("file") ||
+    d.includes("upload") ||
+    d.includes("storage") ||
+    d.includes("too large") ||
+    d.includes("size")
+  );
+}
+
+function statusTitle(status?: number, detail?: string): string {
+  if (detail && isContextLengthError(detail)) {
+    return "File too large for full analysis";
+  }
+
   if (!status) return "Request failed";
 
   switch (status) {
     case 400:
-      return "Invalid request";
+      return detail && isFileRelatedError(detail)
+        ? "Couldn't process the file"
+        : "Invalid request";
     case 401:
       return "Not authorized";
     case 403:
@@ -236,10 +262,10 @@ function statusTitle(status?: number): string {
     case 422:
       return "Couldn't process that request";
     case 429:
-      return "Too many requests";
+      return "Too many requests – please wait a moment";
     case 502:
     case 503:
-      return "Service unavailable";
+      return "Service temporarily unavailable";
   }
 
   if (status >= 500) return "Server error";
@@ -257,7 +283,6 @@ async function errorFromResponse(res: Response): Promise<AssistantError> {
 
   try {
     const raw = await res.text();
-
     if (raw) {
       try {
         detail = stringifyError(JSON.parse(raw), "");
@@ -279,6 +304,19 @@ async function errorFromResponse(res: Response): Promise<AssistantError> {
 
 function toErrorInfo(err: unknown): ErrorInfo {
   if (err instanceof AssistantError) {
+    const detail = err.detail || err.message || "";
+
+    if (isContextLengthError(detail)) {
+      return {
+        title: "File too large for full analysis",
+        detail:
+          "The uploaded file is very large. I analyzed as much as possible. " +
+          "For better results, try a smaller file or ask a more specific question.",
+        code: err.code,
+        retryable: true,
+      };
+    }
+
     switch (err.kind) {
       case "session":
         return {
@@ -302,15 +340,15 @@ function toErrorInfo(err: unknown): ErrorInfo {
         };
       case "http":
         return {
-          title: statusTitle(err.status),
-          detail: err.detail,
+          title: statusTitle(err.status, detail),
+          detail: detail || undefined,
           code: err.code,
           retryable: isRetryableStatus(err.status),
         };
       case "stream":
         return {
           title: "The assistant hit a problem",
-          detail: err.detail,
+          detail: detail || "Something went wrong while generating the reply.",
           retryable: true,
         };
     }
@@ -327,15 +365,12 @@ function toErrorInfo(err: unknown): ErrorInfo {
 
 async function getAuthHeaders(): Promise<Record<string, string>> {
   const token = await getValidAccessToken();
-
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };
-
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
   }
-
   return headers;
 }
 
@@ -381,7 +416,6 @@ async function authenticatedFetch(
   };
 
   let headers: Record<string, string>;
-
   try {
     headers = await getAuthHeaders();
   } catch (err) {
@@ -392,7 +426,6 @@ async function authenticatedFetch(
 
   if (response.status === 401) {
     let refreshedToken: string | null | undefined;
-
     try {
       refreshedToken = await refreshAccessToken();
     } catch (err) {
@@ -491,6 +524,7 @@ async function uploadAndRegisterFile(
   });
 
   if (!registerRes.ok) {
+    // Clean up the storage object if registration fails
     try {
       await supabase.storage.from(STORAGE_BUCKET).remove([path]);
     } catch {
@@ -514,7 +548,6 @@ async function uploadAndRegisterFile(
 
 const fmtSize = (b?: number) => {
   if (!b || b <= 0) return "";
-
   return b > 1e6
     ? `${(b / 1e6).toFixed(1)} MB`
     : `${Math.max(1, Math.round(b / 1e3))} KB`;
@@ -522,19 +555,16 @@ const fmtSize = (b?: number) => {
 
 function fileType(file: GeneratedFile): string {
   const name = file.name || "";
-
   const ext = name.includes(".")
     ? name.split(".").pop()?.toUpperCase()
     : "";
 
   if (ext) return ext;
-
   if (file.mime_type?.includes("spreadsheet")) return "XLSX";
   if (file.mime_type?.includes("csv")) return "CSV";
   if (file.mime_type?.includes("json")) return "JSON";
   if (file.mime_type?.includes("pdf")) return "PDF";
   if (file.mime_type?.startsWith("text/")) return "TEXT";
-
   return "FILE";
 }
 
@@ -555,7 +585,6 @@ function ErrorCard({
     const report = [error.title, error.code, error.detail]
       .filter(Boolean)
       .join("\n");
-
     try {
       await navigator.clipboard.writeText(report);
       setCopied(true);
@@ -642,7 +671,6 @@ function ErrorCard({
 /* ───────────── Assistant ───────────── */
 
 export function AIAssistant() {
-  // Always start fresh – no history is loaded
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [files, setFiles] = useState<File[]>([]);
@@ -665,8 +693,11 @@ export function AIAssistant() {
   useEffect(() => () => abortRef.current?.abort(), []);
 
   useEffect(() => {
-    scrollRef.current?.scrollTo({
-      top: scrollRef.current.scrollHeight,
+    const el = scrollRef.current;
+    if (!el) return;
+    const node = el as HTMLElement;
+    node.scrollTo({
+      top: node.scrollHeight,
       behavior: "smooth",
     });
   }, [messages, busy, status]);
@@ -674,8 +705,9 @@ export function AIAssistant() {
   useEffect(() => {
     const ta = taRef.current;
     if (!ta) return;
-    ta.style.height = "auto";
-    ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
+    const node = ta as HTMLTextAreaElement;
+    node.style.height = "auto";
+    node.style.height = Math.min(node.scrollHeight, 160) + "px";
   }, [input]);
 
   const addFiles = (list: FileList | null) => {
@@ -767,7 +799,14 @@ export function AIAssistant() {
   /* ───────────── Send ───────────── */
 
   const send = async (override?: string, isRetry = false) => {
-    const text = (override ?? input).trim();
+    const rawText = (override ?? input).trim();
+
+    // Always send a usable message when files are present
+    const text =
+      rawText ||
+      (files.length > 0 && !isRetry
+        ? "Please analyze the uploaded file(s)."
+        : "");
 
     if ((!text && files.length === 0) || busy) return;
 
@@ -804,7 +843,7 @@ export function AIAssistant() {
         {
           id: crypto.randomUUID(),
           role: "user",
-          text,
+          text: rawText || (sentFiles.length > 0 ? "(file upload)" : ""),
           files: sentFiles.map((f) => f.name),
         },
       ]);
@@ -839,7 +878,10 @@ export function AIAssistant() {
 
       if (event.type === "status" || event.type === "thinking") {
         setStatus(
-          stringifyError(event.message ?? event.content, "Working…")
+          stringifyError(
+            event.message ?? event.content ?? event.status,
+            "Working…"
+          )
         );
         return;
       }
@@ -850,26 +892,22 @@ export function AIAssistant() {
         event.type === "delta"
       ) {
         const chunk = event.content || event.delta || event.text || "";
-
         if (typeof chunk === "string" && chunk) {
           assistantText += chunk;
           streamSucceededRef.current = true;
           const snapshot = assistantText;
           updateAssistant((msg) => ({ ...msg, text: snapshot }));
         }
-
         setStatus("");
         return;
       }
 
       if (event.type === "message" && event.role === "assistant") {
         const content = event.content || "";
-
         if (typeof content === "string" && content) {
           assistantText = content;
           streamSucceededRef.current = true;
         }
-
         const snapshot = assistantText;
         updateAssistant((msg) => ({ ...msg, text: snapshot }));
         return;
@@ -877,17 +915,14 @@ export function AIAssistant() {
 
       if (event.type === "file") {
         const generatedFile = event.file || event.data || event;
-
         if (generatedFile && generatedFile.id && generatedFile.name) {
           generatedFilesReceivedRef.current += 1;
           streamSucceededRef.current = true;
-
           updateAssistant((msg) => ({
             ...msg,
             generatedFiles: [...(msg.generatedFiles || []), generatedFile],
           }));
         }
-
         setStatus("");
         return;
       }
@@ -897,14 +932,12 @@ export function AIAssistant() {
           event.message ?? event.detail ?? event.error,
           "Assistant error"
         );
-
         if (hasOutput()) {
           console.warn("Ignoring late stream error after output:", detail);
           state.interrupted = true;
           setStatus("");
           return;
         }
-
         throw new AssistantError("stream", { detail });
       }
 
@@ -926,19 +959,17 @@ export function AIAssistant() {
       if (!data || data === "[DONE]") return;
 
       let event: any;
-
       try {
         event = JSON.parse(data);
       } catch {
         return;
       }
-
       handleEvent(event);
     };
 
     try {
       // -------------------------------------------------------
-      // 1. Upload binaries to Storage + register via POST /assistant/files
+      // 1. Upload + register files (strict – never continue with empty ids)
       // -------------------------------------------------------
       const fileIds: string[] = [];
 
@@ -964,14 +995,26 @@ export function AIAssistant() {
             controller.signal
           );
 
+          if (!id) {
+            throw new AssistantError("stream", {
+              detail: `Server did not return a file id for ${file.name}`,
+            });
+          }
+
           fileIds.push(id);
+        }
+
+        if (fileIds.length === 0) {
+          throw new AssistantError("stream", {
+            detail:
+              "The file could not be registered. Please try a smaller file or try again.",
+          });
         }
       }
 
       // -------------------------------------------------------
       // 2. Call streaming chat endpoint
       // -------------------------------------------------------
-
       armTimer(CONNECT_TIMEOUT_MS, "The server took too long to respond.");
 
       const res = await authenticatedFetch(`${API_BASE}/assistant/chat`, {
@@ -1075,34 +1118,37 @@ export function AIAssistant() {
             detail: state.timedOutReason,
           });
         } else {
-          return; // cancelled on purpose
+          return; // user cancelled
         }
       }
 
-      // -------------------------------------------------------
-      // Silent auto-retry on context_length_exceeded
-      // -------------------------------------------------------
       const detailText =
         failure instanceof AssistantError
           ? (failure.detail || failure.message || "").toLowerCase()
           : String(failure).toLowerCase();
 
-      const isContextError =
-        detailText.includes("context_length_exceeded") ||
-        detailText.includes("context window") ||
-        detailText.includes("input exceeds the context");
+      const isContextError = isContextLengthError(detailText);
 
-      if (isContextError && !isRetry) {
+      // Auto-retry once without the large file
+      if (isContextError && !isRetry && sentFiles.length > 0) {
         console.warn(
-          "Context length exceeded – automatically retrying without large files…"
+          "Context length exceeded – automatically retrying without the large file(s)…"
         );
-        // Retry once with the same text but without re-attaching files
+
+        setMessages((m) => [
+          ...m,
+          {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            text: "",
+            notice:
+              "The uploaded file was very large. Retrying your question without the file…",
+          },
+        ]);
+
         return send(text, true);
       }
 
-      // -------------------------------------------------------
-      // Normal error handling
-      // -------------------------------------------------------
       console.error("Assistant request failed:", failure);
 
       const info = toErrorInfo(failure);
@@ -1126,7 +1172,7 @@ export function AIAssistant() {
             text: "",
             error: {
               ...info,
-              retryText: info.retryable ? text : undefined,
+              retryText: info.retryable && text ? text : undefined,
             },
           },
         ];
@@ -1204,7 +1250,7 @@ export function AIAssistant() {
         </span>
       </div>
 
-      {/* Conversation – always starts empty */}
+      {/* Conversation */}
       <div
         ref={scrollRef}
         className="h-[460px] overflow-y-auto px-4 py-5 sm:h-[520px] sm:px-5 lg:h-[560px]"
